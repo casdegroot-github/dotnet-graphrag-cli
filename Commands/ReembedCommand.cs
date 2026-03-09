@@ -1,7 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 
-namespace CodeGraphIndexer.Commands;
+namespace GraphRagCli.Commands;
 
 public static class ReembedCommand
 {
@@ -23,7 +23,7 @@ public static class ReembedCommand
         var conn = GlobalOptions.Parse(parseResult);
         var prefix = providerVal == Provider.Claude ? "claude_" : "";
 
-        Console.WriteLine("CodeGraphIndexer - Reembed (no LLM calls, embedding only)");
+        Console.WriteLine("GraphRagCli - Reembed (no LLM calls, embedding only)");
         Console.WriteLine($"  Neo4j:      {conn.Neo4jUri}");
         Console.WriteLine($"  Ollama:     {conn.OllamaUrl}");
         Console.WriteLine($"  Provider:   {providerVal} (fields: {prefix}summary, {prefix}embedding)");

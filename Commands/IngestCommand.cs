@@ -1,8 +1,8 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
-using CodeGraphIndexer.Helpers;
+using GraphRagCli.Helpers;
 
-namespace CodeGraphIndexer.Commands;
+namespace GraphRagCli.Commands;
 
 public static class IngestCommand
 {
@@ -40,7 +40,7 @@ public static class IngestCommand
             return;
         }
 
-        Console.WriteLine("CodeGraphIndexer - Ingest");
+        Console.WriteLine("GraphRagCli - Ingest");
         Console.WriteLine($"  Solution:     {solutionPath}");
         Console.WriteLine($"  Neo4j:        {conn.Neo4jUri}");
         Console.WriteLine($"  Skip tests:   {skipTestsVal}");

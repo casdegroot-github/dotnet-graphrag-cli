@@ -1,7 +1,7 @@
 using System.CommandLine;
-using CodeGraphIndexer.Commands;
+using GraphRagCli.Commands;
 
-var root = new RootCommand("CodeGraphIndexer - Build a Code Intelligence Graph in Neo4j");
+var root = new RootCommand("GraphRagCli - Build a Code Intelligence Graph in Neo4j");
 root.Add(IngestCommand.Build());
 root.Add(EmbedCommand.Build());
 root.Add(ReembedCommand.Build());

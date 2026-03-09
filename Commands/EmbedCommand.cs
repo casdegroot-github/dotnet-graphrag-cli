@@ -1,8 +1,8 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
-using CodeGraphIndexer.Helpers;
+using GraphRagCli.Helpers;
 
-namespace CodeGraphIndexer.Commands;
+namespace GraphRagCli.Commands;
 
 public static class EmbedCommand
 {
@@ -97,7 +97,7 @@ public static class EmbedCommand
 
     static void PrintBanner(ConnectionInfo conn, Provider provider, string model, EmbedSettings settings, int? passVal)
     {
-        Console.WriteLine("CodeGraphIndexer - Embed");
+        Console.WriteLine("GraphRagCli - Embed");
         Console.WriteLine($"  Neo4j:      {conn.Neo4jUri}");
         Console.WriteLine($"  Provider:   {provider}");
         if (provider == Provider.Ollama) Console.WriteLine($"  Ollama:     {conn.OllamaUrl}");

@@ -1,4 +1,4 @@
-namespace CodeGraphIndexer.Helpers;
+namespace GraphRagCli.Helpers;
 
 public static class ProgressHelper
 {

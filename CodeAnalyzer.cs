@@ -4,7 +4,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 
-namespace CodeGraphIndexer;
+namespace GraphRagCli;
 
 public record NamespaceInfo(string Name, string FilePath);
 public record ClassInfo(string FullName, string Name, string Namespace, string FilePath, string Visibility, bool IsStatic, string? BaseClass, List<string> Interfaces, string Kind, string SourceText);

@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace CodeGraphIndexer.Helpers;
+namespace GraphRagCli.Helpers;
 
 public static class SolutionHelper
 {

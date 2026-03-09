@@ -1,7 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 
-namespace CodeGraphIndexer.Commands;
+namespace GraphRagCli.Commands;
 
 public static class SearchCommand
 {

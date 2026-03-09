@@ -1,8 +1,10 @@
-# GraphRAG — Setup Guide
+# GraphRAG CLI
+
+A .NET CLI tool that builds a code intelligence graph from C# solutions using Roslyn, Neo4j, and LLM-powered summarization. Supports semantic search, graph traversal, and integration with Claude Code via MCP.
 
 ## Prerequisites
 
-- .NET 9 SDK
+- .NET 10 SDK
 - Docker (for Neo4j)
 - Ollama (for local embeddings + optional local summarization)
 - Anthropic API key (optional, for Claude summarization)
@@ -52,7 +54,6 @@ Claude produces better summaries but costs ~$0.40/1M input tokens (Batch API wit
 ## 4. Build the CLI
 
 ```bash
-cd Chabis.Application.Playground.GraphRag-2
 dotnet build
 ```
 

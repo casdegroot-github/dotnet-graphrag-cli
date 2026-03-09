@@ -1,7 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 
-namespace CodeGraphIndexer;
+namespace GraphRagCli;
 
 public record ConnectionInfo(string Neo4jUri, string Neo4jUser, string Neo4jPassword, string OllamaUrl);
 

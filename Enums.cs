@@ -1,4 +1,4 @@
-namespace CodeGraphIndexer;
+namespace GraphRagCli;
 
 public enum Provider { Ollama, Claude }
 public enum SearchMode { Hybrid, Vector }

@@ -2,7 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace CodeGraphIndexer;
+namespace GraphRagCli;
 
 public class OllamaService(string endpoint = "http://localhost:11434", string summaryModel = "qwen2.5-coder:7b")
 {

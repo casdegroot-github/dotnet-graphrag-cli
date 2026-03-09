@@ -6,7 +6,7 @@ using Anthropic.Models.Messages.Batches;
 using BatchParams = Anthropic.Models.Messages.Batches.Params;
 using BatchRequest = Anthropic.Models.Messages.Batches.Request;
 
-namespace CodeGraphIndexer;
+namespace GraphRagCli;
 
 public class ClaudeService
 {

@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace CodeGraphIndexer.Helpers;
+namespace GraphRagCli.Helpers;
 
 public record EmbedSettings(
     bool OnlyChanged, int? Limit, bool Sample,

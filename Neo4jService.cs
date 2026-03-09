@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Neo4j.Driver;
 
-namespace CodeGraphIndexer;
+namespace GraphRagCli;
 
 public enum QueryMode { Name, Semantic, Graph }
 
