@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net9.0</TargetFramework>
+        <RootNamespace>CodeGraphIndexer</RootNamespace>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+        <NoWarn>$(NoWarn);CA2007;S1075;S101;S2325</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Anthropic" Version="12.8.0" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.0.0" />
+        <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.0.0" />
+        <PackageReference Include="Microsoft.Build.Locator" Version="1.7.8" />
+        <PackageReference Include="Neo4j.Driver" Version="6.0.0" />
+        <PackageReference Include="System.CommandLine" Version="2.0.0-beta5.25306.1" />
+    </ItemGroup>
+
+</Project>
