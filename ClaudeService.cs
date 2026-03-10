@@ -24,7 +24,7 @@ public class ClaudeService
             {
                 "type": "object",
                 "properties": {
-                    "docstring": {
+                    "summary": {
                         "type": "string",
                         "description": "A thorough and concise summary of the code's purpose and role in the system. Cover architectural role, composition patterns, and usage context where relevant."
                     },
@@ -38,7 +38,7 @@ public class ClaudeService
                         "description": "1-3 tags describing the code's role"
                     }
                 },
-                "required": ["docstring", "searchText", "tags"],
+                "required": ["summary", "searchText", "tags"],
                 "additionalProperties": false
             }
             """;
@@ -181,10 +181,10 @@ public class ClaudeService
     private static OllamaService.SummaryResult ParseResponse(string responseText)
     {
         var result = JsonSerializer.Deserialize<OllamaService.SummaryResult>(responseText, JsonOptions)
-            ?? new OllamaService.SummaryResult("", []);
+            ?? new OllamaService.SummaryResult(Summary: "", Tags: []);
 
-        if (string.IsNullOrWhiteSpace(result.Docstring))
-            throw new InvalidOperationException($"Claude returned empty docstring. Raw: {responseText}");
+        if (string.IsNullOrWhiteSpace(result.Summary))
+            throw new InvalidOperationException($"Claude returned empty summary. Raw: {responseText}");
 
         return result with { Tags = result.Tags.Select(t => t.ToUpperInvariant()).ToArray() };
     }

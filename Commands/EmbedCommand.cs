@@ -12,7 +12,7 @@ public static class EmbedCommand
     static readonly Option<int?> s_limit = new("--limit") { Description = "Only process first N nodes (for testing)" };
     static readonly Option<bool> s_sample = new("--sample") { Description = "Test with 1 node per type (Class, Interface, Method, Enum)" };
     static readonly Option<bool> s_batch = new("--batch") { Description = "Use Claude Batch API (50% cheaper, async processing)" };
-    static readonly Option<int?> s_pass = new("--pass") { Description = "Run only pass 1 (leaf), 2 (contextual), or 3 (namespace). Default: all" };
+    static readonly Option<int?> s_pass = new("--pass") { Description = "Run only pass 1 (leaf), 2 (contextual), 3 (namespace), 4 (project), or 5 (solution). Default: all" };
 
     public static Command Build()
     {
@@ -29,8 +29,8 @@ public static class EmbedCommand
         command.Validators.Add(result =>
         {
             var passVal = result.GetValue(s_pass);
-            if (passVal.HasValue && passVal.Value is not (1 or 2 or 3))
-                result.AddError("--pass must be 1, 2, or 3");
+            if (passVal.HasValue && passVal.Value is not (1 or 2 or 3 or 4 or 5))
+                result.AddError("--pass must be 1, 2, 3, or 4");
 
             var batchVal = result.GetValue(s_batch);
             var providerVal = result.GetValue(s_provider);
@@ -58,6 +58,8 @@ public static class EmbedCommand
             RunPass1: passVal is null or 1,
             RunPass2: passVal is null or 2,
             RunPass3: passVal is null or 3,
+            RunPass4: passVal is null or 4,
+            RunPass5: passVal is null or 5,
             Config: config);
 
         var isBatch = parseResult.GetValue(s_batch) && providerVal == Provider.Claude;
@@ -116,12 +118,10 @@ public static class EmbedCommand
         {
             var claude = new ClaudeService(model);
             Console.WriteLine($"Using Claude API for summaries (model: {model})");
-            Console.WriteLine($"  Fields: claude_summary, claude_embedding, claude_tags");
             return (claude.GenerateSummaryAsync, claude);
         }
 
         Console.WriteLine($"Using Ollama for summaries (model: {model})");
-        Console.WriteLine($"  Fields: summary, embedding, tags");
         return (prompt => ollama.GenerateSummaryAsync(prompt), null);
     }
 
@@ -138,6 +138,12 @@ public static class EmbedCommand
 
         if (settings.RunPass3)
             await EmbeddingHelper.EmbedNamespacesAsync(neo4j, ollama, summarize, settings.Config);
+
+        if (settings.RunPass4)
+            await EmbeddingHelper.EmbedProjectsAsync(neo4j, ollama, summarize, settings.Config);
+
+        if (settings.RunPass5)
+            await EmbeddingHelper.EmbedSolutionAsync(neo4j, ollama, summarize, settings.Config);
     }
 
     static async Task<List<string>> RunLeafPass(
@@ -146,12 +152,12 @@ public static class EmbedCommand
     {
         Console.WriteLine("\n=== Pass 1: Leaf nodes (Methods without CALLS, Enums) ===");
         var leafNodes = await neo4j.GetLeafNodesForSummarizationAsync(
-            settings.OnlyChanged, settings.Config.MaxSourceLength, settings.Config.FieldPrefix);
+            settings.OnlyChanged, settings.Config.MaxSourceLength);
         var embeddable = leafNodes.Select(n =>
-            new Neo4jService.EmbeddableNode(n.FullName, n.Prompt, n.Labels, n.ContentHash)).ToList();
+            new Neo4jService.EmbeddableNode(n.ElementId, n.FullName, n.Prompt, n.Labels, n.ContentHash)).ToList();
         if (settings.Limit.HasValue) embeddable = embeddable.Take(settings.Limit.Value).ToList();
 
-        var changed = await EmbeddingHelper.EmbedNodes(neo4j, ollama, summarize, embeddable, settings.Sample, settings.Config.FieldPrefix);
+        var changed = await EmbeddingHelper.EmbedNodes(neo4j, ollama, summarize, embeddable, settings.Sample);
 
         if (changed.Count > 0)
         {
@@ -167,13 +173,25 @@ public static class EmbedCommand
         Func<string, Task<OllamaService.SummaryResult>> summarize, EmbedSettings settings)
     {
         Console.WriteLine("\n=== Pass 2: Contextual nodes (Methods with CALLS, Classes, Interfaces) ===");
-        var contextNodes = await neo4j.GetContextualNodesForSummarizationAsync(
-            settings.OnlyChanged, settings.Config.MaxContextChars, settings.Config.MaxSourceLength, settings.Config.FieldPrefix);
-        var embeddable = contextNodes.Select(n =>
-            new Neo4jService.EmbeddableNode(n.FullName, n.Prompt, n.Labels, n.ContentHash)).ToList();
-        if (settings.Limit.HasValue) embeddable = embeddable.Take(settings.Limit.Value).ToList();
+        var tiers = await neo4j.GetPass2TiersAsync(settings.OnlyChanged);
 
-        await EmbeddingHelper.EmbedNodes(neo4j, ollama, summarize, embeddable, settings.Sample, settings.Config.FieldPrefix);
+        if (tiers.Count == 0)
+        {
+            Console.WriteLine("No Pass 2 nodes to process.");
+            return;
+        }
+
+        foreach (var (tier, names) in tiers.OrderBy(t => t.Key))
+        {
+            Console.WriteLine($"\n--- Pass 2 tier {tier + 1}/{tiers.Count}: {names.Count} nodes ---");
+            var contextNodes = await neo4j.GetContextualNodesForSummarizationAsync(
+                settings.OnlyChanged, settings.Config.MaxContextChars, settings.Config.MaxSourceLength, filterNames: names);
+            var embeddable = contextNodes.Select(n =>
+                new Neo4jService.EmbeddableNode(n.ElementId, n.FullName, n.Prompt, n.Labels, n.ContentHash)).ToList();
+            if (settings.Limit.HasValue) embeddable = embeddable.Take(settings.Limit.Value).ToList();
+
+            await EmbeddingHelper.EmbedNodes(neo4j, ollama, summarize, embeddable, settings.Sample);
+        }
     }
 
     static async Task ComputeCentrality(Neo4jService neo4j)

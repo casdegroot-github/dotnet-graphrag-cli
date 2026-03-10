@@ -6,12 +6,17 @@ public static class SolutionHelper
 {
     public static string? ResolveSolutionPath(string inputPath)
     {
-        if (File.Exists(inputPath) && (inputPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
-                                        inputPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)))
-            return Path.GetFullPath(inputPath);
+        if (File.Exists(inputPath))
+        {
+            if (inputPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
+                inputPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) ||
+                inputPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                return Path.GetFullPath(inputPath);
+        }
 
         if (Directory.Exists(inputPath))
         {
+            // Prefer .slnx > .sln > .csproj
             var slnx = Directory.GetFiles(inputPath, "*.slnx", SearchOption.TopDirectoryOnly).FirstOrDefault();
             if (slnx != null) return Path.GetFullPath(slnx);
 
@@ -23,6 +28,13 @@ public static class SolutionHelper
 
             sln = Directory.GetFiles(inputPath, "*.sln", SearchOption.AllDirectories).FirstOrDefault();
             if (sln != null) return Path.GetFullPath(sln);
+
+            // Fall back to .csproj
+            var csproj = Directory.GetFiles(inputPath, "*.csproj", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            if (csproj != null) return Path.GetFullPath(csproj);
+
+            csproj = Directory.GetFiles(inputPath, "*.csproj", SearchOption.AllDirectories).FirstOrDefault();
+            if (csproj != null) return Path.GetFullPath(csproj);
         }
 
         return null;

@@ -16,7 +16,7 @@ public class OllamaService(string endpoint = "http://localhost:11434", string su
         {
             "type": "object",
             "properties": {
-                "docstring": {
+                "summary": {
                     "type": "string",
                     "description": "A thorough and concise 3-4 sentence summary of the code's purpose and role in the system. Cover architectural role, composition patterns, and usage context where relevant."
                 },
@@ -30,13 +30,13 @@ public class OllamaService(string endpoint = "http://localhost:11434", string su
                     "description": "1-3 tags describing the code's role"
                 }
             },
-            "required": ["docstring", "searchText", "tags"]
+            "required": ["summary", "searchText", "tags"]
         }
         """).RootElement;
 
     private readonly HttpClient _http = new() { BaseAddress = new Uri(endpoint), Timeout = TimeSpan.FromMinutes(5) };
 
-    public record SummaryResult(string Docstring, string[] Tags, string? SearchText = null);
+    public record SummaryResult(string Summary, string[] Tags, string? SearchText = null);
 
     public async Task<SummaryResult> GenerateSummaryAsync(string prompt)
     {
@@ -48,10 +48,10 @@ public class OllamaService(string endpoint = "http://localhost:11434", string su
         var responseText = json.GetProperty("response").GetString() ?? "{}";
 
         var result = JsonSerializer.Deserialize<SummaryResult>(responseText, JsonOptions)
-            ?? new SummaryResult("", []);
+            ?? new SummaryResult(Summary: "", Tags: []);
 
-        if (string.IsNullOrWhiteSpace(result.Docstring))
-            throw new InvalidOperationException($"LLM returned empty docstring. Raw response: {responseText}");
+        if (string.IsNullOrWhiteSpace(result.Summary))
+            throw new InvalidOperationException($"LLM returned empty summary. Raw response: {responseText}");
 
         return result with { Tags = result.Tags.Select(t => t.ToUpperInvariant()).ToArray() };
     }
@@ -73,7 +73,6 @@ public class OllamaService(string endpoint = "http://localhost:11434", string su
 
         return $"""
             You are a senior .NET engineer with expertise in code analysis and documentation.
-
             Analyze this C# code snippet and:
             1. {typeInstruction}
                Be thorough and concise. Focus on architectural role and relationships to other components.

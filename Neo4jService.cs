@@ -10,13 +10,20 @@ public enum QueryMode { Name, Semantic, Graph }
 public class Neo4jService : IAsyncDisposable
 {
     private readonly IDriver _driver;
+    private readonly string? _database;
 
-    public Neo4jService(string uri, string username, string password)
+    public Neo4jService(string uri, string username, string password, string? database = null)
     {
         _driver = GraphDatabase.Driver(uri, AuthTokens.Basic(username, password));
+        _database = database;
     }
 
-    public async Task<bool> VerifyConnectivityAsync()
+    private IAsyncSession OpenSession() =>
+        _database is not null
+            ? _driver.AsyncSession(cfg => cfg.WithDatabase(_database))
+            : _driver.AsyncSession();
+
+    public async Task<bool> VerifyConnectivityAsync(bool silent = false)
     {
         try
         {
@@ -25,24 +32,44 @@ public class Neo4jService : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Neo4j connection failed: {ex.Message}");
+            if (!silent)
+                Console.WriteLine($"Neo4j connection failed: {ex.Message}");
             return false;
         }
     }
 
     public async Task InitializeSchemaAsync()
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
         await session.ExecuteWriteAsync(async tx =>
         {
-            await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Project) REQUIRE p.name IS UNIQUE");
+            await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (s:Solution) REQUIRE s.fullName IS UNIQUE");
+            await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Project) REQUIRE p.fullName IS UNIQUE");
             await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Class) REQUIRE c.fullName IS UNIQUE");
             await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (i:Interface) REQUIRE i.fullName IS UNIQUE");
             await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (m:Method) REQUIRE m.fullName IS UNIQUE");
-            await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (n:Namespace) REQUIRE n.name IS UNIQUE");
+            await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (n:Namespace) REQUIRE n.fullName IS UNIQUE");
             await tx.RunAsync("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Enum) REQUIRE e.fullName IS UNIQUE");
         });
         Console.WriteLine("Schema initialized.");
+    }
+
+    public async Task CreateSolutionNodeAsync(string solutionName, IEnumerable<string> projectNames)
+    {
+        await using var session = OpenSession();
+        await session.ExecuteWriteAsync(async tx =>
+        {
+            await tx.RunAsync(
+                "MERGE (s:Solution {fullName: $name})",
+                new { name = solutionName });
+
+            await tx.RunAsync(@"
+                UNWIND $projects AS projName
+                MATCH (s:Solution {fullName: $solution}), (p:Project {fullName: projName})
+                MERGE (s)-[:CONTAINS_PROJECT]->(p)",
+                new { solution = solutionName, projects = projectNames.ToList() });
+        });
+        Console.WriteLine($"Solution node '{solutionName}' created with {projectNames.Count()} projects.");
     }
 
     /// <summary>
@@ -51,13 +78,13 @@ public class Neo4jService : IAsyncDisposable
     /// </summary>
     public async Task IngestProjectNodesAsync(string projectName, CodeAnalyzer.AnalysisResult result)
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
-        // Create Project node
+        // Create Project node and link to Solution if present
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MERGE (p:Project {name: $name})",
+                "MERGE (p:Project {fullName: $name})",
                 new { name = projectName });
         });
 
@@ -68,10 +95,10 @@ public class Neo4jService : IAsyncDisposable
             {
                 await tx.RunAsync(@"
                     UNWIND $batch AS item
-                    MERGE (n:Namespace {name: item.name})
+                    MERGE (n:Namespace {fullName: item.name})
                     SET n.filePath = item.filePath
                     WITH n, item
-                    MATCH (p:Project {name: $project})
+                    MATCH (p:Project {fullName: $project})
                     MERGE (p)-[:CONTAINS_NAMESPACE]->(n)",
                     new { batch = chunk.Select(n => new { name = n.Name, filePath = n.FilePath }).ToList(), project = projectName });
             });
@@ -95,7 +122,7 @@ public class Neo4jService : IAsyncDisposable
                         c.sourceText = item.sourceText,
                         c.contentHash = item.contentHash
                     WITH c, item
-                    MATCH (p:Project {name: $project})
+                    MATCH (p:Project {fullName: $project})
                     MERGE (p)-[:CONTAINS]->(c)",
                     new
                     {
@@ -132,7 +159,7 @@ public class Neo4jService : IAsyncDisposable
                         i.sourceText = item.sourceText,
                         i.contentHash = item.contentHash
                     WITH i, item
-                    MATCH (p:Project {name: $project})
+                    MATCH (p:Project {fullName: $project})
                     MERGE (p)-[:CONTAINS]->(i)",
                     new
                     {
@@ -166,7 +193,7 @@ public class Neo4jService : IAsyncDisposable
                         e.members = item.members,
                         e.contentHash = item.contentHash
                     WITH e, item
-                    MATCH (p:Project {name: $project})
+                    MATCH (p:Project {fullName: $project})
                     MERGE (p)-[:CONTAINS]->(e)",
                     new
                     {
@@ -241,7 +268,7 @@ public class Neo4jService : IAsyncDisposable
     /// </summary>
     public async Task IngestProjectEdgesAsync(string projectName, CodeAnalyzer.AnalysisResult result)
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
         // DEFINES relationships (Class/Interface -> Method)
         foreach (var chunk in result.Methods.Chunk(100))
@@ -331,7 +358,7 @@ public class Neo4jService : IAsyncDisposable
                 await tx.RunAsync(@"
                     UNWIND $batch AS item
                     MATCH (c:Class {fullName: item.fullName})
-                    MATCH (n:Namespace {name: item.namespace})
+                    MATCH (n:Namespace {fullName: item.namespace})
                     MERGE (c)-[:BELONGS_TO_NAMESPACE]->(n)",
                     new { batch = chunk.ToList() });
             });
@@ -349,7 +376,7 @@ public class Neo4jService : IAsyncDisposable
                 await tx.RunAsync(@"
                     UNWIND $batch AS item
                     MATCH (i:Interface {fullName: item.fullName})
-                    MATCH (n:Namespace {name: item.namespace})
+                    MATCH (n:Namespace {fullName: item.namespace})
                     MERGE (i)-[:BELONGS_TO_NAMESPACE]->(n)",
                     new { batch = chunk.ToList() });
             });
@@ -367,7 +394,7 @@ public class Neo4jService : IAsyncDisposable
                 await tx.RunAsync(@"
                     UNWIND $batch AS item
                     MATCH (e:Enum {fullName: item.fullName})
-                    MATCH (n:Namespace {name: item.namespace})
+                    MATCH (n:Namespace {fullName: item.namespace})
                     MERGE (e)-[:BELONGS_TO_NAMESPACE]->(n)",
                     new { batch = chunk.ToList() });
             });
@@ -440,7 +467,7 @@ public class Neo4jService : IAsyncDisposable
 
     public async Task LabelEntryPointsAsync()
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
         // Label extension methods on DI/hosting types
         await session.ExecuteWriteAsync(async tx =>
@@ -479,7 +506,7 @@ public class Neo4jService : IAsyncDisposable
 
     public async Task LabelPublicApiAsync(List<string>? nugetProjects)
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
         // Label public types as PublicApi, optionally filtered to NuGet projects
         foreach (var (label, display) in new[] { ("Interface", "interfaces"), ("Class", "classes"), ("Enum", "enums") })
@@ -492,7 +519,7 @@ public class Neo4jService : IAsyncDisposable
                 if (nugetProjects != null)
                 {
                     query = "MATCH (p:Project)-[:CONTAINS]->(node:" + label + ") " +
-                            "WHERE node.visibility = 'public' AND p.name IN $projects " +
+                            "WHERE node.visibility = 'public' AND p.fullName IN $projects " +
                             "SET node:PublicApi RETURN count(DISTINCT node) AS count";
                     parameters = new { projects = nugetProjects };
                 }
@@ -549,7 +576,7 @@ public class Neo4jService : IAsyncDisposable
 
     public async Task InitializeVectorSchemaAsync()
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
         // Add Embeddable label to all code nodes
         await session.ExecuteWriteAsync(async tx =>
@@ -570,18 +597,6 @@ public class Neo4jService : IAsyncDisposable
                 }}");
         });
 
-        // Create vector index (claude embeddings)
-        await session.ExecuteWriteAsync(async tx =>
-        {
-            await tx.RunAsync(@"
-                CREATE VECTOR INDEX claude_code_embeddings IF NOT EXISTS
-                FOR (n:Embeddable) ON (n.claude_embedding)
-                OPTIONS {indexConfig: {
-                    `vector.dimensions`: 1024,
-                    `vector.similarity_function`: 'cosine'
-                }}");
-        });
-
         Console.WriteLine("Vector schema initialized.");
     }
 
@@ -589,53 +604,41 @@ public class Neo4jService : IAsyncDisposable
 
     public async Task InitializeFulltextIndexAsync()
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(@"
                 CREATE FULLTEXT INDEX embeddable_fulltext IF NOT EXISTS
-                FOR (n:Embeddable) ON EACH [n.name, n.fullName, n.summary]");
-        });
-        await session.ExecuteWriteAsync(async tx =>
-        {
-            await tx.RunAsync(@"
-                CREATE FULLTEXT INDEX claude_embeddable_fulltext IF NOT EXISTS
-                FOR (n:Embeddable) ON EACH [n.name, n.fullName, n.claude_searchText]");
+                FOR (n:Embeddable) ON EACH [n.name, n.fullName, n.searchText]");
         });
         Console.WriteLine("Fulltext index initialized.");
     }
 
-    public record EmbeddableNode(string FullName, string Prompt, IReadOnlyList<string> Labels, string ContentHash);
+    public record EmbeddableNode(string ElementId, string FullName, string Prompt, IReadOnlyList<string> Labels, string ContentHash);
 
-    public async Task SetEmbeddingsBatchAsync(List<(string FullName, string Summary, string? SearchText, string[] Tags, float[] Embedding, string ContentHash)> batch, string prefix = "")
+    public async Task SetEmbeddingsBatchAsync(List<(string ElementId, string Summary, string? SearchText, string[] Tags, float[] Embedding, string ContentHash)> batch)
     {
-        await using var session = _driver.AsyncSession();
-
-        // Field names: "" -> embedding/summary/tags, "claude_" -> claude_embedding/claude_summary/claude_tags
-        var embeddingField = prefix + "embedding";
-        var summaryField = prefix + "summary";
-        var searchTextField = prefix + "searchText";
-        var tagsField = prefix + "tags";
-        var hashField = prefix + "embeddingHash";
+        await using var session = OpenSession();
 
         foreach (var chunk in batch.Chunk(50))
         {
             await session.ExecuteWriteAsync(async tx =>
             {
-                await tx.RunAsync($@"
+                await tx.RunAsync(@"
                     UNWIND $batch AS item
-                    MATCH (n:Embeddable {{fullName: item.fullName}})
-                    SET n.`{embeddingField}` = item.embedding,
-                        n.`{summaryField}` = item.summary,
-                        n.`{searchTextField}` = item.searchText,
-                        n.`{tagsField}` = item.tags,
-                        n.`{hashField}` = item.embeddingHash,
+                    MATCH (n) WHERE elementId(n) = item.elementId
+                    SET n:Embeddable,
+                        n.embedding = item.embedding,
+                        n.summary = item.summary,
+                        n.searchText = item.searchText,
+                        n.tags = item.tags,
+                        n.embeddingHash = item.embeddingHash,
                         n.stale = false",
                     new
                     {
                         batch = chunk.Select(x => new
                         {
-                            fullName = x.FullName,
+                            elementId = x.ElementId,
                             summary = x.Summary,
                             searchText = x.SearchText ?? x.Summary,
                             tags = x.Tags.ToList(),
@@ -649,50 +652,31 @@ public class Neo4jService : IAsyncDisposable
 
     // --- Reembed Support ---
 
-    public record ReembeddableNode(string FullName, string Summary, string? SearchText, string[] Tags, string ContentHash);
+    public record ReembeddableNode(string ElementId, string FullName, string Summary, string? SearchText, string[] Tags, string ContentHash);
 
-    public async Task<List<ReembeddableNode>> GetNodesWithSummariesAsync(string prefix = "")
+    public async Task<List<ReembeddableNode>> GetNodesWithSummariesAsync()
     {
-        await using var session = _driver.AsyncSession();
-        var summaryField = prefix + "summary";
-        var searchTextField = prefix + "searchText";
-        var tagsField = prefix + "tags";
+        await using var session = OpenSession();
 
         var result = await session.ExecuteReadAsync(async tx =>
         {
-            var cursor = await tx.RunAsync($@"
+            var cursor = await tx.RunAsync(@"
                 MATCH (n:Embeddable)
-                WHERE n.`{summaryField}` IS NOT NULL AND n.`{summaryField}` <> ''
-                RETURN n.fullName AS fullName, n.`{summaryField}` AS summary,
-                       n.`{searchTextField}` AS searchText,
-                       n.`{tagsField}` AS tags, n.contentHash AS contentHash");
+                WHERE n.summary IS NOT NULL AND n.summary <> ''
+                RETURN elementId(n) AS elementId, n.fullName AS fullName, n.summary AS summary,
+                       n.searchText AS searchText,
+                       n.tags AS tags, n.contentHash AS contentHash");
             return await cursor.ToListAsync();
         });
 
         return result.Select(r => new ReembeddableNode(
+            r["elementId"].As<string>(),
             r["fullName"].As<string>(),
             r["summary"].As<string>(),
             r["searchText"]?.As<string>(),
             r["tags"]?.As<List<string>>()?.ToArray() ?? [],
             r["contentHash"]?.As<string>() ?? ""
         )).ToList();
-    }
-
-    public async Task<List<(string Name, string Summary)>> GetNamespaceNodesWithSummariesAsync(string prefix = "")
-    {
-        await using var session = _driver.AsyncSession();
-        var summaryField = prefix + "summary";
-
-        var result = await session.ExecuteReadAsync(async tx =>
-        {
-            var cursor = await tx.RunAsync($@"
-                MATCH (n:NamespaceSummary)
-                WHERE n.`{summaryField}` IS NOT NULL AND n.`{summaryField}` <> ''
-                RETURN n.name AS name, n.`{summaryField}` AS summary");
-            return await cursor.ToListAsync();
-        });
-
-        return result.Select(r => (r["name"].As<string>(), r["summary"].As<string>())).ToList();
     }
 
     // --- Phase 1: Stale Tagging ---
@@ -704,7 +688,7 @@ public class Neo4jService : IAsyncDisposable
     {
         if (changedFullNames.Count == 0) return 0;
 
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
         var markedStale = await session.ExecuteWriteAsync(async tx =>
         {
             var result = await tx.RunAsync(@"
@@ -723,18 +707,17 @@ public class Neo4jService : IAsyncDisposable
 
     // --- Two-Pass Summarization ---
 
-    public record SummarizableNode(string FullName, string Prompt, IReadOnlyList<string> Labels, string ContentHash, string NodeType);
+    public record SummarizableNode(string ElementId, string FullName, string Prompt, IReadOnlyList<string> Labels, string ContentHash, string NodeType);
 
     /// <summary>
     /// Pass 1: Leaf nodes — Methods with no outgoing CALLS, and all Enums.
     /// </summary>
-    public async Task<List<SummarizableNode>> GetLeafNodesForSummarizationAsync(bool onlyChanged, int maxSourceLength = 8000, string prefix = "")
+    public async Task<List<SummarizableNode>> GetLeafNodesForSummarizationAsync(bool onlyChanged, int maxSourceLength = 8000)
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
-        var hashField = prefix + "embeddingHash";
         var hashFilter = onlyChanged
-            ? $"AND (n.`{hashField}` IS NULL OR n.contentHash <> n.`{hashField}`)"
+            ? "AND (n.embeddingHash IS NULL OR n.contentHash <> n.embeddingHash)"
             : "";
 
         var result = await session.ExecuteReadAsync(async tx =>
@@ -744,7 +727,7 @@ public class Neo4jService : IAsyncDisposable
                 WHERE (
                     (n:Method AND NOT exists {{ (n)-[:CALLS]->() }})
                 ) {hashFilter}
-                RETURN n.fullName AS fullName,
+                RETURN elementId(n) AS elementId, n.fullName AS fullName,
                        labels(n) AS labels,
                        n.sourceText AS sourceText,
                        n.name AS name,
@@ -762,15 +745,80 @@ public class Neo4jService : IAsyncDisposable
     /// Pass 2: Non-leaf nodes — Methods that CALL others, Classes, Interfaces.
     /// Uses stale flag + content hash instead of composite hash to avoid hash drift.
     /// </summary>
-    public async Task<List<SummarizableNode>> GetContextualNodesForSummarizationAsync(bool onlyChanged, int maxContextChars = 4000, int maxSourceLength = 8000, string prefix = "")
+    public async Task<Dictionary<int, List<string>>> GetPass2TiersAsync(bool onlyChanged)
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
-        var hashField = prefix + "embeddingHash";
-        var summaryField = prefix + "summary";
-        var filter = onlyChanged
-            ? $"AND (n.stale = true OR n.`{summaryField}` IS NULL OR n.contentHash <> n.`{hashField}`)"
+        string ChangeFilter(string alias) => onlyChanged
+            ? $"AND ({alias}.stale = true OR {alias}.summary IS NULL OR {alias}.contentHash <> {alias}.embeddingHash)"
             : "";
+
+        var result = await session.ExecuteReadAsync(async tx =>
+        {
+            // Tier = longest CALLS chain to another Pass 2 node
+            var cursor = await tx.RunAsync($@"
+                MATCH (m:Method:Embeddable)
+                WHERE exists {{ (m)-[:CALLS]->() }}
+                {ChangeFilter("m")}
+                OPTIONAL MATCH path = (m)-[:CALLS*1..20]->(other:Method:Embeddable)
+                WHERE exists {{ (other)-[:CALLS]->() }}
+                WITH m, CASE WHEN path IS NULL THEN 0 ELSE length(path) END AS depth
+                WITH m.fullName AS fullName, max(depth) AS tier
+                RETURN fullName, tier ORDER BY tier");
+            return await cursor.ToListAsync();
+        });
+
+        var tiers = new Dictionary<int, List<string>>();
+        var maxMethodTier = 0;
+
+        foreach (var r in result)
+        {
+            var fullName = r["fullName"].As<string>();
+            var tier = r["tier"].As<int>();
+            if (tier > maxMethodTier) maxMethodTier = tier;
+
+            if (!tiers.TryGetValue(tier, out var list))
+            {
+                list = [];
+                tiers[tier] = list;
+            }
+            list.Add(fullName);
+        }
+
+        // Classes/interfaces/enums go in the final tier (maxMethodTier + 1)
+        var classTier = tiers.Count > 0 ? maxMethodTier + 1 : 0;
+        var classResult = await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync($@"
+                MATCH (n:Embeddable)
+                WHERE (n:Class OR n:Interface OR n:Enum)
+                {ChangeFilter("n")}
+                RETURN n.fullName AS fullName");
+            return await cursor.ToListAsync();
+        });
+
+        if (classResult.Count > 0)
+        {
+            if (!tiers.TryGetValue(classTier, out var list))
+            {
+                list = [];
+                tiers[classTier] = list;
+            }
+            foreach (var r in classResult)
+                list.Add(r["fullName"].As<string>());
+        }
+
+        return tiers;
+    }
+
+    public async Task<List<SummarizableNode>> GetContextualNodesForSummarizationAsync(bool onlyChanged, int maxContextChars = 4000, int maxSourceLength = 8000, IReadOnlyList<string>? filterNames = null)
+    {
+        await using var session = OpenSession();
+
+        var filter = onlyChanged
+            ? "AND (n.stale = true OR n.summary IS NULL OR n.contentHash <> n.embeddingHash)"
+            : "";
+        var nameFilter = filterNames != null ? "AND n.fullName IN $filterNames" : "";
 
         var result = await session.ExecuteReadAsync(async tx =>
         {
@@ -781,6 +829,7 @@ public class Neo4jService : IAsyncDisposable
                     OR n:Interface
                     OR n:Enum)
                 {filter}
+                {nameFilter}
                 CALL {{ WITH n OPTIONAL MATCH (n)-[:CALLS]->(callee:Method) RETURN collect(DISTINCT {{name: callee.name, summary: callee.summary, rel: 'Calls'}}) AS callees }}
                 CALL {{ WITH n OPTIONAL MATCH (n)-[:DEFINES]->(defined:Method) RETURN collect(DISTINCT {{name: defined.name, summary: defined.summary, rel: 'Defines'}}) AS defined }}
                 CALL {{ WITH n OPTIONAL MATCH (n)-[:IMPLEMENTS]->(iface:Interface) RETURN collect(DISTINCT {{name: iface.name, summary: iface.summary, rel: 'Implements'}}) AS ifaces }}
@@ -801,7 +850,7 @@ public class Neo4jService : IAsyncDisposable
                         isEntryPoint: caller:EntryPoint, rel: 'ConsumerSource'
                     }}) AS consumerSources
                 }}
-                RETURN n.fullName AS fullName,
+                RETURN elementId(n) AS elementId, n.fullName AS fullName,
                        labels(n) AS labels,
                        n.sourceText AS sourceText,
                        n.name AS name,
@@ -811,7 +860,8 @@ public class Neo4jService : IAsyncDisposable
                        n.contentHash AS contentHash,
                        ifaces + callees + defined + impls + refs AS neighborContext,
                        enumConsumers,
-                       consumerSources");
+                       consumerSources",
+                filterNames != null ? new { filterNames } : (object?)null);
             return await cursor.ToListAsync();
         });
 
@@ -968,6 +1018,7 @@ public class Neo4jService : IAsyncDisposable
 
     private static SummarizableNode BuildSummarizableNode(IRecord record, string? contextSuffix, string? overrideHash = null, int maxSourceLength = 8000)
     {
+        var elementId = record["elementId"].As<string>();
         var fullName = record["fullName"].As<string>();
         var labels = record["labels"].As<List<string>>();
         var sourceText = record["sourceText"]?.As<string>();
@@ -1010,13 +1061,13 @@ public class Neo4jService : IAsyncDisposable
         if (smallSummary != null)
         {
             // Use a special prompt marker so EmbedNodes can detect and skip LLM
-            var templatePrompt = $"__TEMPLATE__{smallSummary.Docstring}||{string.Join(",", smallSummary.Tags)}";
-            return new SummarizableNode(fullName, templatePrompt, labels, contentHash, nodeType);
+            var templatePrompt = $"__TEMPLATE__{smallSummary.Summary}||{string.Join(",", smallSummary.Tags)}";
+            return new SummarizableNode(elementId, fullName, templatePrompt, labels, contentHash, nodeType);
         }
 
         var isEntryPoint = labels.Contains("EntryPoint");
         var prompt = OllamaService.BuildPrompt(codeBlock, nodeType, contextSuffix, isEntryPoint);
-        return new SummarizableNode(fullName, prompt, labels, contentHash, nodeType);
+        return new SummarizableNode(elementId, fullName, prompt, labels, contentHash, nodeType);
     }
 
     // --- Search ---
@@ -1024,29 +1075,25 @@ public class Neo4jService : IAsyncDisposable
     public record NeighborInfo(string Name, string? Summary, string Relationship);
     public record SearchResult(string FullName, string Name, string? Summary, string? Namespace, string? FilePath, double Score, string Type, List<NeighborInfo>? Neighbors = null, double? PageRank = null, IReadOnlyList<string>? Labels = null, string? Parameters = null, string? ReturnType = null);
 
-    public async Task<List<SearchResult>> SemanticSearchAsync(float[] queryVector, int topK, string? labelFilter, string prefix = "")
+    public async Task<List<SearchResult>> SemanticSearchAsync(float[] queryVector, int topK, string? labelFilter)
     {
-        await using var session = _driver.AsyncSession();
-
-        var indexName = prefix == "claude_" ? "claude_code_embeddings" : "code_embeddings";
-        var summaryField = prefix + "summary";
+        await using var session = OpenSession();
 
         var results = await session.ExecuteReadAsync(async tx =>
         {
-            var cursor = await tx.RunAsync($@"
-                CALL db.index.vector.queryNodes($indexName, $topK, $queryVector)
+            var cursor = await tx.RunAsync(@"
+                CALL db.index.vector.queryNodes('code_embeddings', $topK, $queryVector)
                 YIELD node, score
                 WHERE $labelFilter IS NULL OR $labelFilter IN labels(node)
-                RETURN node.fullName AS fullName, node.name AS name, node.`{summaryField}` AS summary,
+                RETURN node.fullName AS fullName, node.name AS name, node.summary AS summary,
                        node.namespace AS namespace, node.filePath AS filePath, score,
-                       [l IN labels(node) WHERE l IN ['Class','Interface','Method','Enum','NamespaceSummary']][0] AS type,
+                       [l IN labels(node) WHERE l IN ['Class','Interface','Method','Enum','Namespace','Project']][0] AS type,
                        node.pageRank AS pageRank,
                        labels(node) AS labels,
                        node.parameters AS parameters, node.returnType AS returnType
                 ORDER BY score DESC LIMIT $topK",
                 new
                 {
-                    indexName,
                     queryVector = queryVector.Select(f => (double)f).ToList(),
                     topK,
                     labelFilter
@@ -1072,26 +1119,23 @@ public class Neo4jService : IAsyncDisposable
 
     // --- Phase 4: Hybrid Search ---
 
-    public async Task<List<SearchResult>> FulltextSearchAsync(string query, int topK, string prefix = "")
+    public async Task<List<SearchResult>> FulltextSearchAsync(string query, int topK)
     {
-        await using var session = _driver.AsyncSession();
-
-        var indexName = prefix == "claude_" ? "claude_embeddable_fulltext" : "embeddable_fulltext";
-        var summaryField = prefix + "summary";
+        await using var session = OpenSession();
 
         var results = await session.ExecuteReadAsync(async tx =>
         {
-            var cursor = await tx.RunAsync($@"
-                CALL db.index.fulltext.queryNodes($indexName, $query)
+            var cursor = await tx.RunAsync(@"
+                CALL db.index.fulltext.queryNodes('embeddable_fulltext', $query)
                 YIELD node, score
-                RETURN node.fullName AS fullName, node.name AS name, node.`{summaryField}` AS summary,
+                RETURN node.fullName AS fullName, node.name AS name, node.summary AS summary,
                        node.namespace AS namespace, node.filePath AS filePath, score,
-                       [l IN labels(node) WHERE l IN ['Class','Interface','Method','Enum','NamespaceSummary']][0] AS type,
+                       [l IN labels(node) WHERE l IN ['Class','Interface','Method','Enum','Namespace','Project']][0] AS type,
                        node.pageRank AS pageRank,
                        labels(node) AS labels,
                        node.parameters AS parameters, node.returnType AS returnType
                 ORDER BY score DESC LIMIT $topK",
-                new { indexName, query, topK });
+                new { query, topK });
 
             return await cursor.ToListAsync();
         });
@@ -1111,12 +1155,12 @@ public class Neo4jService : IAsyncDisposable
         )).ToList();
     }
 
-    public async Task<List<SearchResult>> HybridSearchAsync(string query, float[] queryVector, int topK, double fulltextWeight = 0.5, double vectorWeight = 0.5, string prefix = "")
+    public async Task<List<SearchResult>> HybridSearchAsync(string query, float[] queryVector, int topK, double fulltextWeight = 0.5, double vectorWeight = 0.5)
     {
         const int k = 20; // RRF constant — lower k gives wider score spread
 
-        var fulltextTask = FulltextSearchAsync(query, topK * 2, prefix);
-        var vectorTask = SemanticSearchAsync(queryVector, topK * 2, null, prefix);
+        var fulltextTask = FulltextSearchAsync(query, topK * 2);
+        var vectorTask = SemanticSearchAsync(queryVector, topK * 2, null);
         await Task.WhenAll(fulltextTask, vectorTask);
 
         var fulltextResults = fulltextTask.Result;
@@ -1194,30 +1238,27 @@ public class Neo4jService : IAsyncDisposable
 
     // --- Graph-Augmented Retrieval ---
 
-    public async Task<List<SearchResult>> GraphAugmentedSearchAsync(float[] queryVector, int topK, string? labelFilter, string prefix = "")
+    public async Task<List<SearchResult>> GraphAugmentedSearchAsync(float[] queryVector, int topK, string? labelFilter)
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
         var candidateCount = topK * 2;
-        var indexName = prefix == "claude_" ? "claude_code_embeddings" : "code_embeddings";
-        var summaryField = prefix + "summary";
 
         // Step 1: Vector search for candidates
         var candidates = await session.ExecuteReadAsync(async tx =>
         {
-            var cursor = await tx.RunAsync($@"
-                CALL db.index.vector.queryNodes($indexName, $candidateCount, $queryVector)
+            var cursor = await tx.RunAsync(@"
+                CALL db.index.vector.queryNodes('code_embeddings', $candidateCount, $queryVector)
                 YIELD node, score
                 WHERE $labelFilter IS NULL OR $labelFilter IN labels(node)
-                RETURN node.fullName AS fullName, node.name AS name, node.`{summaryField}` AS summary,
+                RETURN node.fullName AS fullName, node.name AS name, node.summary AS summary,
                        node.namespace AS namespace, node.filePath AS filePath, score,
-                       [l IN labels(node) WHERE l IN ['Class','Interface','Method','Enum','NamespaceSummary']][0] AS type,
+                       [l IN labels(node) WHERE l IN ['Class','Interface','Method','Enum','Namespace','Project']][0] AS type,
                        node.pageRank AS pageRank,
                        labels(node) AS labels,
                        node.parameters AS parameters, node.returnType AS returnType",
                 new
                 {
-                    indexName,
                     candidateCount,
                     queryVector = queryVector.Select(f => (double)f).ToList(),
                     labelFilter
@@ -1239,20 +1280,19 @@ public class Neo4jService : IAsyncDisposable
             ReturnType: r["returnType"]?.As<string>()
         )).ToList();
 
-        return await GraphExpandAndRerankAsync(candidateResults, topK, prefix);
+        return await GraphExpandAndRerankAsync(candidateResults, topK);
     }
 
     /// <summary>
     /// Post-processing: 1-hop graph expansion + cluster/centrality/entrypoint re-ranking.
     /// Works on candidates from any retrieval method (vector, hybrid, fulltext).
     /// </summary>
-    public async Task<List<SearchResult>> GraphExpandAndRerankAsync(List<SearchResult> candidates, int topK, string prefix = "")
+    public async Task<List<SearchResult>> GraphExpandAndRerankAsync(List<SearchResult> candidates, int topK)
     {
         if (candidates.Count == 0)
             return [];
 
-        await using var session = _driver.AsyncSession();
-        var summaryField = prefix + "summary";
+        await using var session = OpenSession();
 
         // 1-hop expansion — collect neighbors for each candidate
         var candidateFullNames = candidates.Select(c => c.FullName).ToList();
@@ -1264,7 +1304,7 @@ public class Neo4jService : IAsyncDisposable
                 OPTIONAL MATCH (n)-[r]-(neighbor:Embeddable)
                 WHERE type(r) IN ['CALLS','IMPLEMENTS','DEFINES','REFERENCES','EXTENDS','INHERITS_FROM']
                 RETURN fn AS sourceFullName,
-                       collect(DISTINCT {name: neighbor.name, summary: neighbor.`" + summaryField + @"`, relationship: type(r), neighborFullName: neighbor.fullName}) AS neighbors",
+                       collect(DISTINCT {name: neighbor.name, summary: neighbor.summary, relationship: type(r), neighborFullName: neighbor.fullName}) AS neighbors",
                 new { fullNames = candidateFullNames });
             return await cursor.ToListAsync();
         });
@@ -1318,60 +1358,150 @@ public class Neo4jService : IAsyncDisposable
 
     // --- Phase 6: Namespace Summaries ---
 
-    public async Task<List<(string Namespace, List<string> MemberSummaries)>> GetNamespaceSummariesAsync(string prefix = "")
+    public async Task<List<(string ElementId, string Namespace, List<string> MemberSummaries)>> GetNamespaceSummariesAsync()
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
-        var summaryField = prefix + "summary";
         var result = await session.ExecuteReadAsync(async tx =>
         {
-            var cursor = await tx.RunAsync($@"
+            var cursor = await tx.RunAsync(@"
                 MATCH (n:Embeddable)-[:BELONGS_TO_NAMESPACE]->(ns:Namespace)
-                WHERE n.`{summaryField}` IS NOT NULL
-                RETURN ns.name AS namespace, collect(n.name + ': ' + n.`{summaryField}`) AS memberSummaries
-                ORDER BY ns.name");
+                WHERE n.summary IS NOT NULL
+                RETURN elementId(ns) AS elementId, ns.fullName AS namespace, collect(n.name + ': ' + n.summary) AS memberSummaries
+                ORDER BY ns.fullName");
             return await cursor.ToListAsync();
         });
 
         return result.Select(r => (
+            ElementId: r["elementId"].As<string>(),
             Namespace: r["namespace"].As<string>(),
             MemberSummaries: r["memberSummaries"].As<List<string>>()
         )).ToList();
     }
 
-    public async Task StoreNamespaceSummaryAsync(string namespaceName, string summary, float[] embedding, string prefix = "")
+    public async Task<List<(string ElementId, string Project, List<string> NamespaceSummaries)>> GetProjectSummariesAsync()
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
-        var summaryField = prefix + "summary";
-        var embeddingField = prefix + "embedding";
-        var hashField = prefix + "embeddingHash";
-
-        await session.ExecuteWriteAsync(async tx =>
+        var result = await session.ExecuteReadAsync(async tx =>
         {
-            await tx.RunAsync($@"
-                MERGE (ns:NamespaceSummary:Embeddable {{fullName: $fullName}})
-                SET ns.name = $name,
-                    ns.`{summaryField}` = $summary,
-                    ns.`{embeddingField}` = $embedding,
-                    ns.`{hashField}` = $hash,
-                    ns.contentHash = $hash",
-                new
-                {
-                    fullName = $"namespace:{namespaceName}",
-                    name = namespaceName,
-                    summary,
-                    embedding = embedding.Select(f => (double)f).ToList(),
-                    hash = ComputeHash(summary)
-                });
+            var cursor = await tx.RunAsync(@"
+                MATCH (p:Project)-[:CONTAINS_NAMESPACE]->(ns:Namespace)
+                WHERE ns.summary IS NOT NULL
+                WITH elementId(p) AS elementId, p.fullName AS project, collect(ns.fullName + ': ' + ns.summary) AS namespaceSummaries
+                WHERE size(namespaceSummaries) > 0
+                RETURN elementId, project, namespaceSummaries
+                ORDER BY project");
+            return await cursor.ToListAsync();
+        });
+
+        return result.Select(r => (
+            ElementId: r["elementId"].As<string>(),
+            Project: r["project"].As<string>(),
+            NamespaceSummaries: r["namespaceSummaries"].As<List<string>>()
+        )).ToList();
+    }
+
+    public async Task<List<(string ElementId, string SolutionName, List<string> ProjectSummaries)>> GetSolutionSummariesAsync()
+    {
+        await using var session = OpenSession();
+
+        var result = await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(@"
+                MATCH (s:Solution)-[:CONTAINS_PROJECT]->(p:Project)
+                WHERE p.summary IS NOT NULL
+                WITH elementId(s) AS elementId, s.fullName AS solution, collect(p.fullName + ': ' + p.summary) AS projectSummaries
+                WHERE size(projectSummaries) > 0
+                RETURN elementId, solution, projectSummaries
+                ORDER BY solution");
+            return await cursor.ToListAsync();
+        });
+
+        return result.Select(r => (
+            ElementId: r["elementId"].As<string>(),
+            SolutionName: r["solution"].As<string>(),
+            ProjectSummaries: r["projectSummaries"].As<List<string>>()
+        )).ToList();
+    }
+
+    // --- Database Info ---
+
+    public async Task<DatabaseInfo> GetDatabaseInfoAsync()
+    {
+        await using var session = OpenSession();
+
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            // Node counts by label
+            var countCursor = await tx.RunAsync(@"
+                MATCH (n)
+                WITH [l IN labels(n) WHERE l IN ['Project','Namespace','Class','Interface','Method','Enum']][0] AS label
+                WHERE label IS NOT NULL
+                RETURN label, count(*) AS count
+                ORDER BY count DESC");
+            var counts = (await countCursor.ToListAsync())
+                .ToDictionary(r => r["label"].As<string>(), r => r["count"].As<long>());
+
+            // Project names and summaries
+            var projCursor = await tx.RunAsync(@"
+                MATCH (p:Project)
+                OPTIONAL MATCH (p)-[:CONTAINS]->(member)
+                WITH p, count(member) AS memberCount
+                RETURN p.fullName AS name,
+                       coalesce(p.searchText, p.summary) AS searchText,
+                       memberCount
+                ORDER BY p.fullName");
+            var projects = (await projCursor.ToListAsync())
+                .Select(r => new ProjectInfo(
+                    r["name"].As<string>(),
+                    r["searchText"].As<string?>(null),
+                    r["memberCount"].As<long>()))
+                .ToList();
+
+            // Solution summary
+            var solCursor = await tx.RunAsync(@"
+                MATCH (s:Solution)
+                RETURN s.fullName AS name,
+                       coalesce(s.searchText, s.summary) AS searchText
+                ORDER BY s.fullName");
+            var solutions = (await solCursor.ToListAsync())
+                .Select(r => new SolutionInfo(
+                    r["name"].As<string>(),
+                    r["searchText"].As<string?>(null)))
+                .ToList();
+
+            // Embedding coverage
+            var embedCursor = await tx.RunAsync(@"
+                MATCH (n)
+                WHERE any(l IN labels(n) WHERE l IN ['Class','Interface','Method','Enum'])
+                RETURN count(n) AS total,
+                       count(n.embedding) AS embedded");
+            var embedRow = await embedCursor.SingleAsync();
+
+            return new DatabaseInfo(
+                solutions,
+                counts,
+                projects,
+                embedRow["total"].As<long>(),
+                embedRow["embedded"].As<long>());
         });
     }
+
+    public record SolutionInfo(string Name, string? Summary);
+    public record ProjectInfo(string Name, string? Summary, long MemberCount);
+    public record DatabaseInfo(
+        List<SolutionInfo> Solutions,
+        Dictionary<string, long> NodeCounts,
+        List<ProjectInfo> Projects,
+        long TotalEmbeddable,
+        long Embedded);
 
     // --- GDS Centrality ---
 
     public async Task ComputeCentralityAsync()
     {
-        await using var session = _driver.AsyncSession();
+        await using var session = OpenSession();
 
         // Drop existing projection if present
         try

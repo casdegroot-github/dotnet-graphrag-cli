@@ -14,7 +14,7 @@ Working directory: /Users/casdegroot/Documents/repositories/Chabis.Application/s
 **Neo4j** (use `neo4j:read-cypher` MCP tool):
 - Node summaries: `MATCH (n) WHERE n.fullName = '...' RETURN n.claude_summary`
 - Relationships: `MATCH (n)-[r]-(m) WHERE n.fullName = '...' RETURN type(r), m.name, m.claude_summary`
-- Namespace overview: `MATCH (ns:NamespaceSummary) WHERE ns.name CONTAINS '...' RETURN ns.claude_summary`
+- Namespace overview: `MATCH (ns:Namespace) WHERE ns.name CONTAINS '...' RETURN ns.claude_summary`
 
 **Sample project** (read real usage patterns):
 ```

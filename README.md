@@ -19,7 +19,12 @@ This starts Neo4j 5.15 with APOC and Graph Data Science plugins.
 
 - Browser: http://localhost:7474
 - Bolt: bolt://localhost:7687
-- Credentials: `neo4j` / `password`
+- Credentials: `neo4j` / `password123`
+
+Open the Neo4j Browser at http://localhost:7474 to visualize the graph. Log in with the credentials above, then run Cypher queries like:
+```cypher
+MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 100
+```
 
 ## 2. Set up Ollama
 
@@ -115,24 +120,38 @@ dotnet run -- search "input pipeline" --type Class
 
 Add the Neo4j MCP server so Claude Code can query the graph directly during conversations.
 
-Run:
+### Option A: Local binary (recommended)
+
+Install via Homebrew:
 ```bash
-claude mcp add neo4j -s user -- npx -y @anthropic-ai/mcp-remote https://neo4j.mcp.run/sse?nonce=YOUR_NONCE
+brew install neo4j/homebrew-tap/neo4j-mcp
 ```
 
-Or add manually to `~/.claude/settings.json`:
+The project includes a `.mcp.json` that configures it automatically. If you need to adjust credentials, edit `.mcp.json`:
 ```json
 {
   "mcpServers": {
     "neo4j": {
-      "command": "npx",
-      "args": ["-y", "@anthropic-ai/mcp-remote", "https://neo4j.mcp.run/sse?nonce=YOUR_NONCE"]
+      "command": "neo4j-mcp",
+      "env": {
+        "NEO4J_URI": "bolt://localhost:7687",
+        "NEO4J_USERNAME": "neo4j",
+        "NEO4J_PASSWORD": "password123",
+        "NEO4J_DATABASE": "neo4j",
+        "NEO4J_TRANSPORT_MODE": "stdio"
+      }
     }
   }
 }
 ```
 
-To get your nonce, sign up at https://neo4j.mcp.run and connect it to your local Neo4j instance (bolt://localhost:7687, neo4j/password).
+### Option B: Cloud proxy (neo4j.mcp.run)
+
+```bash
+claude mcp add neo4j -s user -- npx -y @anthropic-ai/mcp-remote https://neo4j.mcp.run/sse?nonce=YOUR_NONCE
+```
+
+To get your nonce, sign up at https://neo4j.mcp.run and connect it to your local Neo4j instance (bolt://localhost:7687, neo4j/password123).
 
 This gives Claude Code access to:
 - `get-schema` — inspect the graph structure

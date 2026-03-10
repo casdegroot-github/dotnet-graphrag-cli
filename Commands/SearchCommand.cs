@@ -9,7 +9,6 @@ public static class SearchCommand
     static readonly Option<int> s_top = new("--top") { Description = "Number of results", DefaultValueFactory = _ => 10 };
     static readonly Option<string?> s_type = new("--type") { Description = "Filter by type: Class, Interface, Method, Enum" };
     static readonly Option<SearchMode> s_mode = new("--mode") { Description = "Search mode: Hybrid (fulltext+vector) or Vector" };
-    static readonly Option<bool> s_claude = new("--claude") { Description = "Use Claude embeddings/summaries instead of Ollama" };
 
     public static Command Build()
     {
@@ -18,7 +17,6 @@ public static class SearchCommand
         command.Add(s_top);
         command.Add(s_type);
         command.Add(s_mode);
-        command.Add(s_claude);
         GlobalOptions.AddAllOptions(command);
 
         command.SetAction(async (parseResult, _) => await ExecuteAsync(parseResult));
@@ -31,9 +29,7 @@ public static class SearchCommand
         var topK = parseResult.GetValue(s_top);
         var typeFilter = parseResult.GetValue(s_type);
         var searchMode = parseResult.GetValue(s_mode);
-        var useClaude = parseResult.GetValue(s_claude);
         var conn = GlobalOptions.Parse(parseResult);
-        var fieldPrefix = useClaude ? "claude_" : "";
 
         try
         {
@@ -42,10 +38,9 @@ public static class SearchCommand
 
             var ollama = new OllamaService(conn.OllamaUrl);
 
-            var (results, modeLabel) = await ExecuteSearch(neo4j, ollama, query, searchMode, topK, typeFilter, fieldPrefix);
+            var (results, modeLabel) = await ExecuteSearch(neo4j, ollama, query, searchMode, topK, typeFilter);
 
-            var providerLabel = useClaude ? "claude" : "ollama";
-            PrintResults(results, query, modeLabel, providerLabel);
+            PrintResults(results, query, modeLabel);
         }
         catch (Exception ex)
         {
@@ -56,7 +51,7 @@ public static class SearchCommand
 
     static async Task<(List<Neo4jService.SearchResult> Results, string ModeLabel)> ExecuteSearch(
         Neo4jService neo4j, OllamaService ollama, string query,
-        SearchMode searchMode, int topK, string? typeFilter, string fieldPrefix)
+        SearchMode searchMode, int topK, string? typeFilter)
     {
         var vector = await ollama.EmbedQueryAsync(query);
 
@@ -65,7 +60,7 @@ public static class SearchCommand
 
         if (searchMode == SearchMode.Vector)
         {
-            candidates = await neo4j.SemanticSearchAsync(vector, topK * 2, typeFilter, fieldPrefix);
+            candidates = await neo4j.SemanticSearchAsync(vector, topK * 2, typeFilter);
             modeLabel = "vector";
         }
         else
@@ -78,16 +73,16 @@ public static class SearchCommand
                 QueryMode.Semantic => "hybrid:semantic",
                 _ => "hybrid"
             };
-            candidates = await neo4j.HybridSearchAsync(query, vector, topK * 2, ftWeight, vecWeight, fieldPrefix);
+            candidates = await neo4j.HybridSearchAsync(query, vector, topK * 2, ftWeight, vecWeight);
             modeLabel = $"{routeLabel} (ft={ftWeight:F1}, vec={vecWeight:F1})";
         }
-        var results = await neo4j.GraphExpandAndRerankAsync(candidates, topK, fieldPrefix);
+        var results = await neo4j.GraphExpandAndRerankAsync(candidates, topK);
         return (results, modeLabel);
     }
 
-    static void PrintResults(List<Neo4jService.SearchResult> results, string query, string modeLabel, string providerLabel)
+    static void PrintResults(List<Neo4jService.SearchResult> results, string query, string modeLabel)
     {
-        Console.WriteLine($"Searching for: \"{query}\" [{modeLabel}, {providerLabel}]");
+        Console.WriteLine($"Searching for: \"{query}\" [{modeLabel}]");
 
         if (results.Count == 0)
         {

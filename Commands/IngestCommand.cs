@@ -35,7 +35,7 @@ public static class IngestCommand
         var solutionPath = SolutionHelper.ResolveSolutionPath(inputPath);
         if (solutionPath == null)
         {
-            Console.WriteLine($"Error: No .sln or .slnx file found at or under: {inputPath}");
+            Console.WriteLine($"Error: No .sln, .slnx, or .csproj file found at or under: {inputPath}");
             Environment.ExitCode = 1;
             return;
         }
@@ -94,6 +94,10 @@ public static class IngestCommand
                 Console.WriteLine($"\n  {name}:");
                 await neo4j.IngestProjectEdgesAsync(name, result);
             }
+
+            // Create Solution node from .sln filename
+            var solutionName = Path.GetFileNameWithoutExtension(solutionPath);
+            await neo4j.CreateSolutionNodeAsync(solutionName, allResults.Keys);
 
             Console.WriteLine("\nLabeling entry points...");
             await neo4j.LabelEntryPointsAsync();

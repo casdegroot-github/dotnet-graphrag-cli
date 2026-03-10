@@ -37,7 +37,7 @@ public class CodeAnalyzer
     /// </summary>
     public async Task<Dictionary<string, AnalysisResult>> AnalyzeSolutionAsync(string solutionPath, bool skipTests, bool skipSamples)
     {
-        Console.WriteLine($"Loading solution: {solutionPath}");
+        Console.WriteLine($"Loading: {solutionPath}");
         using var workspace = MSBuildWorkspace.Create();
         workspace.WorkspaceFailed += (_, e) =>
         {
@@ -45,8 +45,17 @@ public class CodeAnalyzer
                 Console.WriteLine($"  Workspace warning: {e.Diagnostic.Message}");
         };
 
-        var solution = await workspace.OpenSolutionAsync(solutionPath);
-        Console.WriteLine($"Loaded {solution.Projects.Count()} projects from solution");
+        Solution solution;
+        if (solutionPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+        {
+            var project = await workspace.OpenProjectAsync(solutionPath);
+            solution = project.Solution;
+        }
+        else
+        {
+            solution = await workspace.OpenSolutionAsync(solutionPath);
+        }
+        Console.WriteLine($"Loaded {solution.Projects.Count()} projects");
 
         var results = new Dictionary<string, AnalysisResult>();
 
