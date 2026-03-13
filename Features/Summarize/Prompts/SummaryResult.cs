@@ -5,7 +5,7 @@ namespace GraphRagCli.Features.Summarize.Prompts;
 
 public record SummaryResult(
     [property: JsonPropertyName("summary")]
-    [property: Description("2-4 sentence summary focusing on business purpose, data flow, and key decisions. Lead with what it does, not the name.")]
+    [property: Description("Detailed summary as instructed in the prompt.")]
     string Summary,
 
     [property: JsonPropertyName("tags")]

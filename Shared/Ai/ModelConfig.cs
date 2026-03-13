@@ -115,19 +115,13 @@ public static class ModelConfigLoader
         return false;
     }
 
-    public static string? ValidateSummarizeOptions(this ModelsConfig config, string? modelName, bool batch, int? parallel)
+    public static string? ValidateSummarizeOptions(this ModelsConfig config, string? modelName, bool batch)
     {
         if (!config.TryGetSummarizeModel(modelName, out var modelConfig, out var error))
             return error;
 
         if (batch && modelConfig!.Provider != "claude")
             return "--batch is only supported with Claude models";
-        if (batch && parallel is > 0)
-            return "--batch and --parallel are mutually exclusive";
-        if (parallel is < 1)
-            return "--parallel must be at least 1";
-        if (parallel > modelConfig!.Concurrency)
-            return $"--parallel {parallel} exceeds max concurrency for {modelConfig.Provider} ({modelConfig.Concurrency})";
 
         return null;
     }

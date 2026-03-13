@@ -1,13 +1,15 @@
-Answer a question about the indexed codebase using semantic search and the Neo4j code graph.
+---
+name: ask-codebase
+description: Answer questions about how the codebase works, its architecture, how features are implemented, or how components interact. Use when the user asks about code structure, data flow, algorithms, or wants to understand any part of the project.
+---
 
-## Question
-$ARGUMENTS
+Answer a question about the indexed codebase using semantic search and the Neo4j code graph.
 
 ## Tools
 
 **Search CLI** (run 3-5 queries in parallel):
 ```
-dotnet run -- search "$query" --top 5 -d $database
+dotnet run -- search "$query" --top 5 -d graphrag-cli
 ```
 
 **Neo4j MCP** (use `graphrag-cli:read-cypher` tool):
@@ -15,6 +17,7 @@ dotnet run -- search "$query" --top 5 -d $database
 - Relationships: `MATCH (n)-[r]-(m) WHERE n.fullName = '...' RETURN type(r), m.fullName, m.summary LIMIT 20`
 - Namespace overview: `MATCH (ns:Namespace) WHERE ns.fullName CONTAINS '...' RETURN ns.fullName, ns.summary`
 - Multi-hop: `MATCH (n)-[*1..3]-(m) WHERE n.fullName = '...' RETURN DISTINCT labels(m), m.fullName, m.summary LIMIT 30`
+- Source code: `MATCH (n) WHERE n.fullName = '...' RETURN n.sourceText`
 
 ## Process
 
@@ -35,5 +38,5 @@ dotnet run -- search "$query" --top 5 -d $database
 ## Rules
 - Every claim must trace to a search result or graph query
 - Use full type names (e.g. `GraphRagCli.Features.Search.SearchService`)
-- If the graph lacks information, say so — do not speculate
+- If the graph lacks information, query `sourceText` or read the actual files
 - Prefer graph traversal over assumptions about code structure

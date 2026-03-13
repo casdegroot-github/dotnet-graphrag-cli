@@ -13,9 +13,6 @@ public record SummarizeParams
     [Option(Description = "Re-summarize all nodes, not just changed")]
     public bool Force { get; init; }
 
-    [Option(Description = "Concurrent summarization calls")]
-    public int? Parallel { get; init; }
-
     [Option(Description = "Use Claude Batch API (50% cheaper, async processing)")]
     public bool Batch { get; init; }
 
@@ -27,6 +24,9 @@ public record SummarizeParams
 
     [Option(Description = "List tier breakdown and exit")]
     public bool ListTiers { get; init; }
+
+    [Option(Description = "Custom prompt instruction (overrides default)")]
+    public string? Prompt { get; init; }
 
     [UseOption<DatabaseOption>]
     public string? Database { get; init; }
@@ -41,8 +41,7 @@ public sealed partial class SummarizeCommand
             var config = ModelConfigLoader.Load();
             var error = config.ValidateSummarizeOptions(
                 result.GetValue(this.Option_Model),
-                result.GetValue(this.Option_Batch),
-                result.GetValue(this.Option_Parallel));
+                result.GetValue(this.Option_Batch));
 
             if (error is not null)
                 result.AddError(error);

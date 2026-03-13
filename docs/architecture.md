@@ -1,69 +1,87 @@
 # Architecture
 
-> Auto-generated from the GraphRAG CLI code intelligence graph.
+> *Generated from the code intelligence graph.*
 
-## Overview
+GraphRagCli is a .NET CLI application that transforms C# codebases into Neo4j knowledge graphs by parsing source code with Roslyn, generating semantic embeddings, and enriching nodes with AI-powered summaries for retrieval-augmented generation workflows. The system provides semantic search capabilities by combining vector embeddings, full-text search, and graph topology analysis.
 
-GraphRagCli is a C# CLI tool that transforms codebases into Neo4j knowledge graphs for semantic search and AI-powered analysis. It combines code ingestion, AI summarization, and graph database integration to enable retrieval-augmented generation and intelligent code navigation.
+## Pipeline
+
+```mermaid
+graph LR
+    A[C# Solution] -->|Roslyn| B[Ingest]
+    B -->|nodes + edges| C[(Neo4j)]
+    B -->|post-process| C
+    C --> D[Summarize]
+    D -->|LLM tier-by-tier| C
+    C --> E[Embed]
+    E -->|vectors + centrality| C
+    C --> F[Search]
+    F -->|hybrid + rerank| G[Results]
+```
+
+Each stage reads from and writes back to Neo4j. All stages are incremental — only changed nodes get reprocessed. See [incremental updates](reference/incremental-updates.md) for how change detection works.
+
+## Graph at a glance
+
+| Metric | Count |
+|--------|-------|
+| Methods | 170 |
+| Classes | 104 |
+| Namespaces | 18 |
+| Interfaces | 5 |
+| Enums | 2 |
+| Relationships | 543 |
+| Tier depth | 0–11 |
 
 ## Project structure
 
-The codebase follows a vertical slice architecture: each feature is self-contained under `Features/`, and cross-cutting concerns live in `Shared/`.
+Vertical slice architecture — each feature is self-contained, cross-cutting concerns live in `Shared/`.
 
-```
-GraphRagCli/
-├── Features/
-│   ├── Database/       # Neo4j container lifecycle
-│   ├── Embed/          # Vector embeddings + centrality
-│   ├── Ingest/         # Roslyn analysis → graph
-│   │   ├── Analysis/   # Syntax tree parsing
-│   │   └── GraphDb/    # Neo4j ingestion + post-processing
-│   ├── List/           # Database inspection
-│   ├── Models/         # AI model configuration CLI
-│   ├── Search/         # Hybrid search (vector + fulltext)
-│   └── Summarize/      # LLM summarization pipeline
-│       ├── Prompts/    # Prompt engineering
-│       └── Summarizers/# Concurrent + batch summarizers
-├── Shared/
-│   ├── Ai/             # AI provider abstraction (Ollama, Claude)
-│   ├── Docker/         # Container orchestration
-│   ├── GraphDb/        # Neo4j driver factory
-│   ├── Options/        # Shared CLI options
-│   └── Progress/       # Progress bar rendering
-└── Program.cs          # DI setup + CLI entry point
+```mermaid
+graph TD
+    Root[GraphRagCli] --> Features
+    Root --> Shared
+    Root --> Program[Program.cs — DI + CLI entry]
+
+    Features --> Database["Database<br/><small>Neo4j container lifecycle</small>"]
+    Features --> Ingest["Ingest<br/><small>Roslyn → graph</small>"]
+    Features --> Summarize["Summarize<br/><small>LLM summaries</small>"]
+    Features --> Embed["Embed<br/><small>Vectors + centrality</small>"]
+    Features --> Search["Search<br/><small>Hybrid retrieval</small>"]
+    Features --> List["List<br/><small>Database inspection</small>"]
+    Features --> Models["Models<br/><small>AI model config CLI</small>"]
+
+    Shared --> Ai["Ai<br/><small>Provider abstraction</small>"]
+    Shared --> Docker["Docker<br/><small>Container client</small>"]
+    Shared --> GraphDb["GraphDb<br/><small>Neo4j driver factory</small>"]
+    Shared --> Progress["Progress<br/><small>Progress bar</small>"]
+    Shared --> Options["Options<br/><small>Shared CLI options</small>"]
 ```
 
-## Data flow
+Features never reference other Features — only Shared. The application bootstraps via `Program.cs` which registers all DI services through per-feature `Add*Services` extension methods:
 
-```
-C# Solution
-    │
-    ▼
-┌─────────┐     ┌──────────────┐     ┌───────────┐
-│  Ingest  │────▶│   Neo4j DB   │◀────│ Summarize │
-│ (Roslyn) │     │  (nodes +    │     │   (LLM)   │
-└─────────┘     │  edges)      │     └───────────┘
-                │              │           │
-                │              │     ┌─────▼─────┐
-                │              │◀────│   Embed   │
-                │              │     │ (vectors) │
-                └──────┬───────┘     └───────────┘
-                       │
-                 ┌─────▼─────┐
-                 │  Search   │
-                 │ (hybrid)  │
-                 └───────────┘
-```
+| Entry point | What it registers |
+|------------|-------------------|
+| `AddDockerServices` | Docker client, Neo4j container client |
+| `AddGraphDbServices` | Neo4j session factory |
+| `AddAiServices` | Model config, kernel factory |
+| `AddIngestServices` | MSBuild environment, code analyzer, ingest service |
+| `AddSummarizeServices` | Prompt builder, summarize service |
 
-1. **Ingest**: Roslyn parses C# → nodes + edges in Neo4j
-2. **Summarize**: LLM generates summaries tier-by-tier, bottom-up
-3. **Embed**: Vector embeddings + PageRank centrality
-4. **Search**: Hybrid retrieval → graph expansion → reranking
+## Pipeline stages
 
-## Deep dives
+| Stage | What it does | Doc |
+|-------|-------------|-----|
+| **Ingest** | Roslyn parses C# → nodes + edges in Neo4j, then post-processes (stale cleanup, tier computation, labeling) | [ingest](pipeline/ingest.md) |
+| **Summarize** | LLM generates summaries bottom-up through tiers, propagates dirty flags upward | [summarize](pipeline/summarize.md) |
+| **Embed** | Vector embeddings from summaries, PageRank + degree centrality via GDS | [embed](pipeline/embed.md) |
+| **Search** | Embed query → hybrid retrieval → RRF merge → graph expansion → centrality reranking | [search](pipeline/search.md) |
+| **Database** | Neo4j Docker container init, adopt, list, schema setup | [database](pipeline/database.md) |
 
-- [Graph schema](graph-schema.md) — node types, relationships, labels
-- [Tiering & summarization](tiering.md) — how tiers work, hierarchical summarization
-- [Search pipeline](search-pipeline.md) — hybrid search, RRF, graph reranking
-- [Incremental updates](incremental-updates.md) — change detection, propagation, body hash transfer
-- [Features](features.md) — detailed breakdown of each feature slice
+## Reference
+
+| Topic | Doc |
+|-------|-----|
+| Node types, relationships, properties | [graph-schema](reference/graph-schema.md) |
+| Change detection, dirty flag propagation, body hash transfer | [incremental-updates](reference/incremental-updates.md) |
+| Provider config, models.json, searchText strategy | [model-configuration](reference/model-configuration.md) |

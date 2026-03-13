@@ -67,20 +67,38 @@ public class ClaudeBatchSummarizer : INodeSummarizer
     public long TotalInputTokens => _totalInputTokens;
     public long TotalOutputTokens => _totalOutputTokens;
 
+    private const int MaxBatchSize = 1000;
+
     public async Task<List<NodeSummaryResult>> SummarizeAsync(List<EmbeddableNode> nodes)
     {
         if (nodes.Count == 0) return [];
 
-        var batchItems = nodes.Select(n => (n.FullName, n.Prompt)).ToList();
+        var allResults = new Dictionary<string, SummaryResult>();
         var sw = Stopwatch.StartNew();
-        var (batchId, idMap) = await SubmitBatchAsync(batchItems);
 
-        var results = await WaitForBatchAsync(batchId, idMap);
-        Console.WriteLine($"Batch completed in {sw.Elapsed:mm\\:ss}. Got {results.Count}/{nodes.Count} results.");
+        var chunks = nodes
+            .Select(n => (n.FullName, n.Prompt))
+            .Chunk(MaxBatchSize)
+            .ToArray();
+
+        for (var i = 0; i < chunks.Length; i++)
+        {
+            var chunk = chunks[i].ToList();
+            if (chunks.Length > 1)
+                Console.WriteLine($"  Chunk {i + 1}/{chunks.Length} ({chunk.Count} requests)");
+
+            var (batchId, idMap) = await SubmitBatchAsync(chunk);
+            var chunkResults = await WaitForBatchAsync(batchId, idMap);
+
+            foreach (var kv in chunkResults)
+                allResults[kv.Key] = kv.Value;
+        }
+
+        Console.WriteLine($"Batch completed in {sw.Elapsed:mm\\:ss}. Got {allResults.Count}/{nodes.Count} results.");
 
         return nodes
-            .Where(n => results.ContainsKey(n.FullName))
-            .Select(n => new NodeSummaryResult(n, results[n.FullName]))
+            .Where(n => allResults.ContainsKey(n.FullName))
+            .Select(n => new NodeSummaryResult(n, allResults[n.FullName]))
             .ToList();
     }
 

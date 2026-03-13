@@ -20,7 +20,7 @@ public class KernelFactory(string ollamaUrl = "http://localhost:11434")
 
     private IChatClient CreateChatClient(string provider) => provider switch
     {
-        "ollama" => new OllamaApiClient(new Uri(ollamaUrl)),
+        "ollama" => new OllamaApiClient(new HttpClient { BaseAddress = new Uri(ollamaUrl), Timeout = TimeSpan.FromMinutes(5) }),
         "claude" => new AnthropicClient().Beta.AsIChatClient("claude-haiku-4-5-20251001"),
         _ => throw new NotSupportedException($"Unknown provider: {provider}")
     };

@@ -15,12 +15,20 @@ public class Neo4jSummarizeRepository(IDriver driver)
         return results.Single();
     }
 
-    public async Task<List<ReadyNodeData>> GetTierNodesAsync(int tier, bool force, int? limit = null)
+    public async Task<int> MarkAllNeedsSummaryAsync()
+    {
+        var (_, summary, _) = await driver
+            .ExecutableQuery("MATCH (n) WHERE n.tier IS NOT NULL SET n.needsSummary = true RETURN count(n) AS cnt")
+            .ExecuteAsync();
+        return summary.Counters.PropertiesSet;
+    }
+
+    public async Task<List<ReadyNodeData>> GetTierNodesAsync(int tier, int? limit = null)
     {
         var limitClause = limit.HasValue ? $"LIMIT {limit.Value}" : "";
         var (records, _, _) = await driver
             .ExecutableQuery($@"
-                MATCH (n) WHERE n.tier = $tier AND (n.needsSummary = true OR $force)
+                MATCH (n) WHERE n.tier = $tier AND n.needsSummary = true
                 WITH n {limitClause}
                 OPTIONAL MATCH (child)-->(n)
                 RETURN elementId(n) AS ElementId, n.fullName AS FullName,
@@ -33,7 +41,7 @@ public class Neo4jSummarizeRepository(IDriver driver)
                            labels: labels(child)
                        }} END) AS Children,
                        sum(CASE WHEN child IS NOT NULL AND child.summary IS NULL THEN 1 ELSE 0 END) AS MissingChildSummaries")
-            .WithParameters(new { tier, force })
+            .WithParameters(new { tier })
             .ExecuteAsync();
 
         return records.Select(r => new ReadyNodeData(

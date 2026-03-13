@@ -5,20 +5,25 @@ namespace GraphRagCli.Features.Summarize.Prompts;
 
 public class PromptBuilder : IPromptBuilder
 {
-    public List<EmbeddableNode> BuildPrompts(List<ReadyNodeData> nodes, SummarizeModelConfig config) =>
-        nodes.Select(n => BuildPrompt(n, config)).ToList();
+    public List<EmbeddableNode> BuildPrompts(List<ReadyNodeData> nodes, SummarizeModelConfig config, string? customPrompt = null) =>
+        nodes.Select(n => BuildPrompt(n, config, customPrompt)).ToList();
 
-    private static EmbeddableNode BuildPrompt(ReadyNodeData node, SummarizeModelConfig config)
+    private static EmbeddableNode BuildPrompt(ReadyNodeData node, SummarizeModelConfig config, string? customPrompt)
     {
         var nodeType = GetNodeType(node);
-        var instruction = GetInstruction(nodeType, node.Labels.Contains(NodeLabels.EntryPoint), config.SearchTextStrategy);
+        var instruction = customPrompt ?? GetInstruction(config.SearchTextStrategy);
         var content = BuildContent(node, nodeType);
 
-        var prompt = Truncate($"""
+        var fullPrompt = $"""
             {instruction}
 
             {content}
-            """, config.MaxPromptChars);
+            """;
+
+        var prompt = Truncate(fullPrompt, config.MaxPromptChars);
+
+        if (prompt.Length < fullPrompt.Length)
+            Console.WriteLine($"  Warning: truncated {node.FullName} ({fullPrompt.Length:N0} → {config.MaxPromptChars:N0} chars, {fullPrompt.Length - config.MaxPromptChars:N0} chars lost)");
 
         return new EmbeddableNode(node.ElementId, node.FullName, prompt, node.Labels);
     }
@@ -30,7 +35,7 @@ public class PromptBuilder : IPromptBuilder
     private static string GetNodeType(ReadyNodeData node) =>
         node.Labels.FirstOrDefault(KnownTypes.Contains) ?? "Unknown";
 
-    private static string GetInstruction(string nodeType, bool isEntryPoint, SearchTextStrategy searchTextStrategy)
+    private static string GetInstruction(SearchTextStrategy searchTextStrategy)
     {
         var frontLoad = searchTextStrategy == SearchTextStrategy.FirstTwoSentences;
         var tags = "DATABASE, API, CONFIGURATION, UTILITY, PRODUCER, CONSUMER, EXTERNAL_SERVICE, DI_REGISTRATION, PIPELINE, MAPPING, VALIDATION, MESSAGING, CACHING, LOGGING, SERIALIZATION, AUTH, TESTING";
@@ -39,108 +44,22 @@ public class PromptBuilder : IPromptBuilder
             ? "- Start with 1-2 keyword-dense sentences covering what it does, technologies used, and problem solved. Then elaborate freely."
             : "";
 
-        return nodeType switch
-        {
-            NodeLabels.Method when isEntryPoint =>
-                $"""
-                Analyze this C# DI/hosting registration method for a code intelligence graph.
-                Explain what subsystem it wires up, what services and interfaces it registers, and what configuration it applies.
+        return $"""
+            Analyze this C# code for a code intelligence graph.
 
-                Rules:
-                - Lead with the business purpose, not the class/method name
-                - Never start with "This method...", "This class...", "The `Foo`..."
-                - Describe behavior and data flow, not structure
-                - Be concise: 2-4 sentences max
-                {searchTextRule}
-                - Assign 1-3 tags: {tags}
-                """,
-            NodeLabels.Method =>
-                $"""
-                Analyze this C# method for a code intelligence graph.
-                Explain the business problem it solves, what data flows in and out, and what decisions or transformations it performs. Focus on WHY it exists, not just WHAT it does.
+            Start with a 2-sentence summary that captures what it does, the technologies used, and the problem solved. Then explain clearly and in detail:
+            - How does the logic flow from start to end?
+            - What are the key algorithms, data structures, or patterns used?
+            - How do the main components or methods interact?
+            - Note any non-obvious behavior, edge cases, or important design decisions.
 
-                Rules:
-                - Lead with the business purpose, not the class/method name
-                - Never start with "This method...", "This class...", "The `Foo`..."
-                - Describe behavior and data flow, not structure
-                - Be concise: 2-4 sentences max
-                {searchTextRule}
-                - Assign 1-3 tags: {tags}
-                """,
-            NodeLabels.Class =>
-                $"""
-                Analyze this C# class for a code intelligence graph.
-                Explain what business problem it solves, what data flows through it, and what key decisions it makes. Mention the orchestration pattern if it coordinates multiple collaborators.
-
-                Rules:
-                - Lead with the business purpose, not the class/method name
-                - Never start with "This method...", "This class...", "The `Foo`..."
-                - Describe behavior and data flow, not structure
-                - Be concise: 2-4 sentences max
-                {searchTextRule}
-                - Assign 1-3 tags: {tags}
-                """,
-            NodeLabels.Interface =>
-                $"""
-                Analyze this C# interface for a code intelligence graph.
-                Explain what capability it abstracts and why that abstraction boundary exists. What can implementations vary?
-
-                Rules:
-                - Lead with the business purpose, not the class/method name
-                - Never start with "This method...", "This class...", "The `Foo`..."
-                - Describe behavior and data flow, not structure
-                - Be concise: 2-4 sentences max
-                {searchTextRule}
-                - Assign 1-3 tags: {tags}
-                """,
-            NodeLabels.Enum =>
-                $"""
-                Analyze this C# enum for a code intelligence graph.
-                Explain the domain concept it models. List all members with brief explanations. Mention how consumers use these values to drive behavior.
-
-                Rules:
-                - Lead with the business purpose, not the class/method name
-                - Never start with "This method...", "This class...", "The `Foo`..."
-                - Describe behavior and data flow, not structure
-                - Be concise: 2-4 sentences max
-                {searchTextRule}
-                - Assign 1-3 tags: {tags}
-                """,
-            NodeLabels.Namespace =>
-                $"""
-                Summarize this namespace for a code intelligence graph.
-                Given the components and their summaries, explain:
-                - What business capability does this namespace provide?
-                - What is the key data flow or processing pipeline?
-                - How do the components collaborate to deliver that capability?
-
-                Rules:
-                - Lead with the business purpose, not "This namespace..."
-                - Describe behavior and data flow, not list classes
-                - 3-5 sentences max
-                {searchTextRule}
-                """,
-            NodeLabels.Project =>
-                $"""
-                Summarize this project for a code intelligence graph.
-                Given the namespaces and their summaries, explain:
-                - What is this project's core purpose?
-                - What are the main workflows or pipelines?
-                - How do the namespaces layer together?
-
-                Rules:
-                - Lead with the business purpose
-                - Describe the architecture and key data flows
-                - 3-5 sentences max
-                {searchTextRule}
-                """,
-            NodeLabels.Solution =>
-                """
-                Write a 1-2 sentence elevator pitch for this solution.
-                This will be used by an LLM to decide whether to search this codebase. Focus on: what domain it serves, what it does, and what makes it distinctive.
-                """,
-            _ => "Explain the purpose and architectural role of this code."
-        };
+            Rules:
+            - Lead with the business purpose, not the code element name
+            - Never start with "This method...", "This class...", "The `Foo`..."
+            - Describe behavior and data flow, not structure
+            {searchTextRule}
+            - Assign 1-3 tags: {tags}
+            """;
     }
 
     private static string BuildContent(ReadyNodeData node, string nodeType)

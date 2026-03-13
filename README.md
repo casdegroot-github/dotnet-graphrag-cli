@@ -104,12 +104,12 @@ Summarizes nodes bottom-up through tiers: methods first, then classes, namespace
 | Option | Description |
 |--------|-------------|
 | `--model` | Summarization model (default: from `~/.graphragcli/models.json`) |
-| `--force` | Re-summarize all nodes, not just changed |
-| `--parallel N` | Concurrent summarization calls |
-| `--batch` | Use Claude Batch API (Claude models only) |
+| `--force` | Mark all nodes for re-summarization (resumable if interrupted) |
+| `--batch` | Use Claude Batch API (Claude models only, ≥100 nodes per tier) |
 | `--sample` | Test with 1 node per type |
 | `--tier N` | Only process specific tiers (repeatable) |
 | `--list-tiers` | Show tier breakdown and exit |
+| `--prompt` | Custom prompt instruction (overrides default) |
 
 ### `embed` — Generate vector embeddings
 
@@ -174,13 +174,18 @@ dotnet run -- summarize -d my-project
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for an overview, or dive into:
+See [docs/architecture.md](docs/architecture.md) for the overview, then dive into each stage:
 
-- [Graph schema](docs/graph-schema.md) — node types, relationships, properties
-- [Tiering & summarization](docs/tiering.md) — hierarchical tiers, prompt strategy, searchText
-- [Search pipeline](docs/search-pipeline.md) — hybrid search, RRF, graph reranking
-- [Incremental updates](docs/incremental-updates.md) — change detection, propagation, body hash transfer
-- [Features](docs/features.md) — detailed breakdown of each feature slice
+Pipeline stages:
+- [Ingest](docs/pipeline/ingest.md) — Roslyn analysis, graph creation, post-processing
+- [Summarize](docs/pipeline/summarize.md) — tiering, prompts, batch vs concurrent, retry logic
+- [Embed](docs/pipeline/embed.md) — vector embeddings, centrality scores
+- [Search](docs/pipeline/search.md) — hybrid retrieval, RRF, graph reranking
+
+Reference:
+- [Graph schema](docs/reference/graph-schema.md) — node types, relationships, properties
+- [Incremental updates](docs/reference/incremental-updates.md) — change detection, dirty flag propagation
+- [Model configuration](docs/reference/model-configuration.md) — providers, models.json, searchText strategy
 
 ## MCP integration
 
@@ -213,8 +218,4 @@ This gives Claude Code access to `get-schema`, `read-cypher`, and `write-cypher`
 
 ### `/ask-codebase` skill
 
-The custom Claude Code command at `.claude/commands/ask-codebase.md` combines the search CLI with Neo4j MCP queries to answer questions about any indexed codebase.
-
-```
-/ask-codebase How does the summarization pipeline work?
-```
+The custom Claude Code skill at `.claude/skills/ask-codebase/` auto-fires when codebase questions are asked, combining the search CLI with Neo4j MCP queries to answer questions about any indexed codebase.

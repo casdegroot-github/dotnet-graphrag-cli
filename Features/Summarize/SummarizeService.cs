@@ -27,21 +27,18 @@ public partial class SummarizeService(
         }
 
         var summarizer = kernelFactory.GetSummarizer(config, resolvedModel);
-        var concurrency = parameters.Parallel ?? 1;
+        var concurrency = config.Concurrency;
 
-        ClaudeBatchSummarizer? claudeBatchService = null;
-        INodeSummarizer nodeSummarizer;
-        if (parameters.Batch)
-        {
-            claudeBatchService = new ClaudeBatchSummarizer(resolvedModel);
-            nodeSummarizer = claudeBatchService;
-        }
-        else
-        {
-            nodeSummarizer = new ConcurrentNodeSummarizer(summarizer, concurrency);
-        }
+        var concurrentSummarizer = new ConcurrentNodeSummarizer(summarizer, concurrency);
+        ClaudeBatchSummarizer? claudeBatchService = parameters.Batch ? new ClaudeBatchSummarizer(resolvedModel) : null;
 
         Console.WriteLine($"Using {config.Provider} for summaries (model: {resolvedModel}, concurrency: {concurrency})");
+
+        if (parameters.Force)
+        {
+            var marked = await repo.MarkAllNeedsSummaryAsync();
+            Console.WriteLine($"Force mode: marked {marked} nodes for re-summarization");
+        }
 
         var maxDepth = await repo.GetMaxDepthAsync();
         var tiers = Enumerable.Range(0, maxDepth + 1);
@@ -53,7 +50,7 @@ public partial class SummarizeService(
         foreach (var tier in tiers)
         {
             var limit = parameters.Sample ? 1 : (int?)null;
-            var nodes = await repo.GetTierNodesAsync(tier, parameters.Force, limit);
+            var nodes = await repo.GetTierNodesAsync(tier, limit);
 
             Console.WriteLine($"\n=== Tier {tier}: {nodes.Count} nodes ===");
 
@@ -62,7 +59,10 @@ public partial class SummarizeService(
             foreach (var node in nodes.Where(n => n.MissingChildSummaries > 0))
                 Console.WriteLine($"  Warning: {node.FullName} has {node.MissingChildSummaries} children without summaries");
 
-            var prompts = promptBuilder.BuildPrompts(nodes, config);
+            var prompts = promptBuilder.BuildPrompts(nodes, config, parameters.Prompt);
+            var useBatch = claudeBatchService != null && prompts.Count >= 100;
+            INodeSummarizer nodeSummarizer = useBatch ? claudeBatchService! : concurrentSummarizer;
+            if (useBatch) Console.WriteLine("  Using batch API");
             var results = await nodeSummarizer.SummarizeAsync(prompts);
 
             if (config.SearchTextStrategy == SearchTextStrategy.FirstTwoSentences)

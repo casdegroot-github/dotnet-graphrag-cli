@@ -43,7 +43,7 @@ public class SummarizeCommandHandler(
         Console.WriteLine($"  Database:   {p.Database ?? "(auto-detect)"}");
         Console.WriteLine($"  Model:      {modelName} ({modelConfig.Provider})");
         Console.WriteLine($"  Force:      {p.Force}");
-        if (p.Parallel.HasValue) Console.WriteLine($"  Parallel:   {p.Parallel}");
+        Console.WriteLine($"  Concurrency:{modelConfig.Concurrency}");
         if (p.Batch) Console.WriteLine($"  Batch:      true");
         if (p.Tier is { Length: > 0 }) Console.WriteLine($"  Tiers:      {string.Join(", ", p.Tier)}");
         if (p.Sample) Console.WriteLine($"  Sample:     1 per type");
