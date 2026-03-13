@@ -5,205 +5,216 @@ A .NET CLI tool that builds a code intelligence graph from C# solutions using Ro
 ## Prerequisites
 
 - .NET 10 SDK
-- Docker (for Neo4j)
+- Docker (for Neo4j containers)
 - Ollama (for local embeddings + optional local summarization)
 - Anthropic API key (optional, for Claude summarization)
 
-## 1. Start Neo4j
+## Quick start
 
 ```bash
-docker compose up -d
+# 1. Create a Neo4j database
+dotnet run -- database init
+
+# 2. Ingest a C# solution
+dotnet run -- ingest /path/to/MySolution.sln
+
+# 3. Summarize with an LLM
+dotnet run -- summarize
+
+# 4. Generate embeddings
+dotnet run -- embed
+
+# 5. Search the graph
+dotnet run -- search "how does retry work"
 ```
 
-This starts Neo4j 5.15 with APOC and Graph Data Science plugins.
+## Setup
 
-- Browser: http://localhost:7474
-- Bolt: bolt://localhost:7687
-- Credentials: `neo4j` / `password123`
+### Ollama (required)
 
-Open the Neo4j Browser at http://localhost:7474 to visualize the graph. Log in with the credentials above, then run Cypher queries like:
-```cypher
-MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 100
-```
-
-## 2. Set up Ollama
-
-Ollama is **required** — it runs the embedding model for all search operations, regardless of which summarization provider you use.
+Ollama runs the embedding model for all search operations.
 
 ```bash
-# Install (macOS)
 brew install ollama
-
-# Start the server
 ollama serve
-
-# Pull the embedding model (required)
-ollama pull snowflake-arctic-embed2
-
-# Pull the summarization model (optional, only if using Ollama for summaries)
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3-embedding:4b    # embedding model
+ollama pull qwen3-coder           # summarization model (optional)
 ```
 
-Default endpoint: `http://localhost:11434`
+### Claude (optional)
 
-## 3. Set up Claude (optional)
-
-If using Claude for summarization instead of Ollama:
+For higher-quality summaries using Claude:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Claude produces better summaries but costs ~$0.40/1M input tokens (Batch API with 50% discount).
+Claude produces better summaries but costs money. Supports the Batch API for 50% cost reduction.
 
-## 4. Build the CLI
+## Commands
+
+### `database` — Manage Neo4j containers
 
 ```bash
-dotnet build
+# Create a new Neo4j container
+dotnet run -- database init
+dotnet run -- database init --name my-project --port 7688
+
+# List all managed containers
+dotnet run -- database list
+
+# Adopt an existing Neo4j container
+dotnet run -- database adopt my-container
 ```
 
-## 5. Ingest a codebase
+### `ingest` — Parse C# code into the graph
 
 ```bash
-# Basic — point at a solution
 dotnet run -- ingest /path/to/MySolution.sln
-
-# Skip test and sample projects
 dotnet run -- ingest /path/to/MySolution.sln --skip-tests --skip-samples
-
-# Use a .slnf to mark which projects are NuGet packages (labels public API surface)
-dotnet run -- ingest /path/to/MySolution.sln --nuget-slnf /path/to/nuget-projects.slnf
+dotnet run -- ingest /path/to/MySolution.sln --nuget-slnf /path/to/nuget.slnf
 ```
 
-This parses all C# code with Roslyn and creates the graph in Neo4j (nodes + relationships).
+Parses all C# code with Roslyn: extracts classes, interfaces, enums, methods, call relationships, and type references. Creates nodes and edges in Neo4j. Incremental — only re-processes changed code.
 
-## 6. Generate summaries and embeddings
+### `summarize` — Generate LLM summaries
 
 ```bash
-# With Ollama (free, ~30 min for ~700 nodes)
-dotnet run -- embed --provider Ollama
+# With Ollama (free, local)
+dotnet run -- summarize
 
-# With Claude (faster, ~3 min, costs money)
-dotnet run -- embed --provider Claude
+# With Claude (faster, better quality)
+dotnet run -- summarize --model claude-haiku-4-5-20251001
 
 # With Claude Batch API (50% cheaper, async)
-dotnet run -- embed --provider Claude --batch
-
-# Only run a specific pass
-dotnet run -- embed --provider Claude --pass 1   # leaf nodes only
-dotnet run -- embed --provider Claude --pass 2   # contextual nodes
-dotnet run -- embed --provider Claude --pass 3   # namespace summaries
+dotnet run -- summarize --model claude-haiku-4-5-20251001 --batch
 
 # Test with a small sample first
-dotnet run -- embed --provider Claude --sample
+dotnet run -- summarize --sample --force
+
+# Only process specific tiers
+dotnet run -- summarize --tier 0 --tier 1
+
+# Show tier breakdown
+dotnet run -- summarize --list-tiers
 ```
 
-Incremental by default — only re-embeds changed or stale nodes. Use `--force` to re-embed everything.
+Summarizes nodes bottom-up through tiers: methods first, then classes, namespaces, projects, and the solution. Each tier's summaries feed into the next tier's prompts.
 
-## 7. Search the graph
+| Option | Description |
+|--------|-------------|
+| `--model` | Summarization model (default: from `~/.graphragcli/models.json`) |
+| `--force` | Re-summarize all nodes, not just changed |
+| `--parallel N` | Concurrent summarization calls |
+| `--batch` | Use Claude Batch API (Claude models only) |
+| `--sample` | Test with 1 node per type |
+| `--tier N` | Only process specific tiers (repeatable) |
+| `--list-tiers` | Show tier breakdown and exit |
+
+### `embed` — Generate vector embeddings
 
 ```bash
-# Hybrid search (default — fulltext + vector, auto-routed)
-dotnet run -- search "how does retry work" --top 5
-
-# Use Claude embeddings/summaries
-dotnet run -- search "how does retry work" --top 5 --claude
-
-# Vector-only search
-dotnet run -- search "change detection" --mode Vector
-
-# Filter by type
-dotnet run -- search "input pipeline" --type Class
+dotnet run -- embed
+dotnet run -- embed --force          # re-embed everything
+dotnet run -- embed --model nomic-embed-text
 ```
 
-## 8. Configure Neo4j MCP for Claude Code
+Generates vector embeddings from summaries + searchText, creates a Neo4j vector index, and computes PageRank centrality scores for search ranking.
 
-Add the Neo4j MCP server so Claude Code can query the graph directly during conversations.
+| Option | Description |
+|--------|-------------|
+| `--model` | Embedding model (default: from `~/.graphragcli/models.json`) |
+| `--force` | Re-embed all nodes |
 
-### Option A: Local binary (recommended)
+### `search` — Query the code graph
 
-Install via Homebrew:
+```bash
+dotnet run -- search "docker container management"
+dotnet run -- search "how does retry work" --top 5
+dotnet run -- search "input pipeline" --type Class
+dotnet run -- search "change detection" --mode Vector
+```
+
+Hybrid search combines Neo4j fulltext and vector indexes, then reranks using graph relationships (neighbors, centrality).
+
+| Option | Description |
+|--------|-------------|
+| `--top N` | Number of results (default: 10) |
+| `--mode` | `Hybrid` (default) or `Vector` |
+| `--type` | Filter: `Class`, `Interface`, `Method`, `Enum` |
+
+### `list` — Inspect database contents
+
+```bash
+dotnet run -- list
+```
+
+Shows solutions, projects, node counts, and embedding coverage.
+
+### `models` — Manage AI model configurations
+
+```bash
+dotnet run -- models list
+dotnet run -- models add summarize qwen3-coder --provider ollama --max-prompt-chars 8000
+dotnet run -- models add embedding nomic-embed-text --provider ollama --dimensions 768
+dotnet run -- models remove qwen3-coder
+dotnet run -- models default summarize claude-haiku-4-5-20251001
+```
+
+Model configurations are stored in `~/.graphragcli/models.json`.
+
+### Global option
+
+All commands that interact with Neo4j accept `-d` / `--database` to specify which container to target. If only one managed container is running, it auto-detects.
+
+```bash
+dotnet run -- search "query" -d my-project
+dotnet run -- summarize -d my-project
+```
+
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for an overview, or dive into:
+
+- [Graph schema](docs/graph-schema.md) — node types, relationships, properties
+- [Tiering & summarization](docs/tiering.md) — hierarchical tiers, prompt strategy, searchText
+- [Search pipeline](docs/search-pipeline.md) — hybrid search, RRF, graph reranking
+- [Incremental updates](docs/incremental-updates.md) — change detection, propagation, body hash transfer
+- [Features](docs/features.md) — detailed breakdown of each feature slice
+
+## MCP integration
+
+GraphRAG CLI databases can be queried directly from Claude Code using the Neo4j MCP server.
+
+### Setup
+
 ```bash
 brew install neo4j/homebrew-tap/neo4j-mcp
 ```
 
-The project includes a `.mcp.json` that configures it automatically. If you need to adjust credentials, edit `.mcp.json`:
+The `database init` and `database adopt` commands output MCP configuration JSON that you can add to `.mcp.json`:
+
 ```json
 {
   "mcpServers": {
-    "neo4j": {
+    "graphrag-cli": {
       "command": "neo4j-mcp",
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USERNAME": "neo4j",
-        "NEO4J_PASSWORD": "password123",
-        "NEO4J_DATABASE": "neo4j",
-        "NEO4J_TRANSPORT_MODE": "stdio"
+        "NEO4J_PASSWORD": "password123"
       }
     }
   }
 }
 ```
 
-### Option B: Cloud proxy (neo4j.mcp.run)
+This gives Claude Code access to `get-schema`, `read-cypher`, and `write-cypher` tools for querying the code graph.
 
-```bash
-claude mcp add neo4j -s user -- npx -y @anthropic-ai/mcp-remote https://neo4j.mcp.run/sse?nonce=YOUR_NONCE
+### `/ask-codebase` skill
+
+The custom Claude Code command at `.claude/commands/ask-codebase.md` combines the search CLI with Neo4j MCP queries to answer questions about any indexed codebase.
+
 ```
-
-To get your nonce, sign up at https://neo4j.mcp.run and connect it to your local Neo4j instance (bolt://localhost:7687, neo4j/password123).
-
-This gives Claude Code access to:
-- `get-schema` — inspect the graph structure
-- `read-cypher` — run arbitrary read queries
-- `write-cypher` — modify the graph
-
-## 9. Set up the `/ask-codebase` skill
-
-The custom Claude Code command lives at `.claude/commands/ask-codebase.md`. It combines the search CLI with Neo4j MCP queries to answer questions about the indexed codebase.
-
-Usage:
+/ask-codebase How does the summarization pipeline work?
 ```
-/ask-codebase How do I set up a basic data pipeline?
-```
-
-This triggers a multi-step process: expand the query → run parallel searches → follow the graph → synthesize an answer grounded in the code graph.
-
-## CLI reference
-
-| Command | Description |
-|---------|-------------|
-| `ingest <solution-path>` | Parse C# solution and build the graph |
-| `embed` | Generate summaries + embeddings for all nodes |
-| `reembed` | Re-embed specific nodes or all nodes |
-| `search <query>` | Search the graph |
-
-### Global options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--uri` | `bolt://localhost:7687` | Neo4j connection URI |
-| `--user` | `neo4j` | Neo4j username |
-| `--password` | `password123` | Neo4j password |
-| `--ollama-url` | `http://localhost:11434` | Ollama endpoint |
-
-### Embed options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--provider` | `Ollama` | `Ollama` or `Claude` |
-| `--model` | auto | Model name (defaults to `qwen2.5-coder:7b` / `claude-haiku-4-5`) |
-| `--force` | false | Re-embed all nodes, not just changed |
-| `--batch` | false | Use Claude Batch API (50% cheaper) |
-| `--pass` | all | Run only pass 1, 2, or 3 |
-| `--limit` | none | Process first N nodes only |
-| `--sample` | false | Test with 1 node per type |
-
-### Search options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--top` | 10 | Number of results |
-| `--mode` | `Hybrid` | `Hybrid` or `Vector` |
-| `--claude` | false | Use Claude summaries/embeddings |
-| `--type` | none | Filter: `Class`, `Interface`, `Method`, `Enum` |
