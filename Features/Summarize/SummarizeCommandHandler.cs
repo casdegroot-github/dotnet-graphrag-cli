@@ -1,16 +1,19 @@
 using System.CommandLine;
 using Albatross.CommandLine;
+using GraphRagCli.Features.Summarize.Summarizers;
+using GraphRagCli.Shared.Ai;
 
 namespace GraphRagCli.Features.Summarize;
 
 public class SummarizeCommandHandler(
     SummarizeService service,
+    ModelsConfig modelsConfig,
     ParseResult result,
     SummarizeParams parameters) : BaseHandler<SummarizeParams>(result, parameters)
 {
     public override async Task<int> InvokeAsync(CancellationToken ct)
     {
-        PrintBanner(parameters);
+        PrintBanner(parameters, modelsConfig);
 
         try
         {
@@ -19,10 +22,10 @@ public class SummarizeCommandHandler(
             if (summarizeResult.IsEmpty)
                 return 0;
 
-            if (summarizeResult.ClaudeBatchService != null)
-                PrintClaudeUsageReport(summarizeResult.ClaudeBatchService, summarizeResult.ResolvedModel);
+            if (summarizeResult.ClaudeBatchSummarizer != null)
+                PrintClaudeUsageReport(summarizeResult.ClaudeBatchSummarizer, summarizeResult.ResolvedModel);
 
-            return summarizeResult.HasFailures ? 1 : 0;
+            return 0;
         }
         catch (Exception ex)
         {
@@ -31,23 +34,23 @@ public class SummarizeCommandHandler(
         }
     }
 
-    static void PrintBanner(SummarizeParams p)
+    static void PrintBanner(SummarizeParams p, ModelsConfig config)
     {
+        var modelName = config.ResolveSummarizeModelName(p.Model);
+        var modelConfig = config.GetSummarizeModel(p.Model);
+
         Console.WriteLine("GraphRagCli - Summarize");
         Console.WriteLine($"  Database:   {p.Database ?? "(auto-detect)"}");
-        Console.WriteLine($"  Provider:   {p.Provider}");
-        Console.WriteLine($"  Model:      {p.Model ?? "(default)"}");
+        Console.WriteLine($"  Model:      {modelName} ({modelConfig.Provider})");
         Console.WriteLine($"  Force:      {p.Force}");
         if (p.Parallel.HasValue) Console.WriteLine($"  Parallel:   {p.Parallel}");
         if (p.Batch) Console.WriteLine($"  Batch:      true");
-        if (p.Step is { Length: > 0 }) Console.WriteLine($"  Steps:      {string.Join(", ", p.Step)}");
-        if (p.Skip is { Length: > 0 }) Console.WriteLine($"  Skip:       {string.Join(", ", p.Skip)}");
-        if (p.Limit.HasValue) Console.WriteLine($"  Limit:      {p.Limit}");
+        if (p.Tier is { Length: > 0 }) Console.WriteLine($"  Tiers:      {string.Join(", ", p.Tier)}");
         if (p.Sample) Console.WriteLine($"  Sample:     1 per type");
         Console.WriteLine();
     }
 
-    static void PrintClaudeUsageReport(ClaudeBatchService claude, string model)
+    static void PrintClaudeUsageReport(ClaudeBatchSummarizer claude, string model)
     {
         Console.WriteLine();
         Console.WriteLine("=== Claude API Usage Report ===");

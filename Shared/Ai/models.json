@@ -1,0 +1,46 @@
+{
+  "embedding": {
+    "qwen3-embedding:4b": {
+      "provider": "ollama",
+      "dimensions": 2560,
+      "documentPrefix": null,
+      "queryPrefix": "Instruct: Find code elements relevant to the following query.\nQuery: "
+    },
+    "nomic-embed-text": {
+      "provider": "ollama",
+      "dimensions": 768,
+      "documentPrefix": "search_document: ",
+      "queryPrefix": "search_query: "
+    }
+  },
+  "summarize": {
+    "qwen3-coder": {
+      "provider": "ollama",
+      "maxPromptChars": 8000,
+      "concurrency": 1,
+      "searchTextStrategy": "firstTwoSentences"
+    },
+    "qwen2.5-coder:7b": {
+      "provider": "ollama",
+      "maxPromptChars": 8000,
+      "concurrency": 4,
+      "searchTextStrategy": "firstTwoSentences"
+    },
+    "claude-haiku-4-5-20251001": {
+      "provider": "claude",
+      "maxPromptChars": 50000,
+      "concurrency": 30,
+      "searchTextStrategy": "separate"
+    },
+    "claude-sonnet-4-5-20250514": {
+      "provider": "claude",
+      "maxPromptChars": 50000,
+      "concurrency": 30,
+      "searchTextStrategy": "separate"
+    }
+  },
+  "defaults": {
+    "embedding": "qwen3-embedding:4b",
+    "summarize": "qwen3-coder"
+  }
+}

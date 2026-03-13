@@ -24,6 +24,7 @@ public class IngestService(
         var projectStats = await IngestAsync(repo, solutionName, analysisResults, runTimestamp);
         var reconcileResult = await ReconcileAsync(postProcessor, runTimestamp);
         var labelResult = await LabelAsync(postProcessor, solutionPath, parameters);
+        await postProcessor.ComputeTiersAsync();
 
         return new IngestResult(
             solutionName, projectStats, reconcileResult,
@@ -47,13 +48,13 @@ public class IngestService(
             await repo.IngestMethodNodesAsync(name, r.Methods, r.Calls, runTimestamp);
 
             // Edges
-            await repo.IngestDefinesEdgesAsync(r.Methods, runTimestamp);
+            await repo.IngestDefinedByEdgesAsync(r.Methods, runTimestamp);
             await repo.IngestInheritanceEdgesAsync(r.Classes, runTimestamp);
             await repo.IngestImplementsEdgesAsync(r.Classes, runTimestamp);
             await repo.IngestInterfaceInheritanceEdgesAsync(r.Interfaces, runTimestamp);
             await repo.IngestNamespaceMembershipEdgesAsync(r.Classes, r.Interfaces, r.Enums, runTimestamp);
             await repo.IngestExtensionMethodEdgesAsync(r.Methods, runTimestamp);
-            await repo.IngestCallEdgesAsync(r.Calls, runTimestamp);
+            await repo.IngestCalledByEdgesAsync(r.Calls, runTimestamp);
             await repo.IngestReferenceEdgesAsync(r.References, runTimestamp);
 
             projectStats.Add(new ProjectIngestStats(name, r.Namespaces.Count, r.Classes.Count,

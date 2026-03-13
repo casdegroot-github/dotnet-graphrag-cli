@@ -1,18 +1,20 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Anthropic;
+using GraphRagCli.Features.Summarize.Prompts;
 using Anthropic.Models.Messages;
 using Anthropic.Models.Messages.Batches;
 using BatchParams = Anthropic.Models.Messages.Batches.Params;
 using BatchRequest = Anthropic.Models.Messages.Batches.Request;
 
-namespace GraphRagCli.Features.Summarize;
+namespace GraphRagCli.Features.Summarize.Summarizers;
 
 /// <summary>
-/// Claude Batch API client for bulk summarization at 50% cost.
+/// Claude Batch API summarizer at 50% cost.
 /// SK has no batch support, so this uses the Anthropic SDK directly.
 /// </summary>
-public class ClaudeBatchService
+public class ClaudeBatchSummarizer : INodeSummarizer
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -22,7 +24,7 @@ public class ClaudeBatchService
 
     private static readonly Dictionary<string, JsonElement> SummarySchemaDict;
 
-    static ClaudeBatchService()
+    static ClaudeBatchSummarizer()
     {
         var schemaJson = """
             {
@@ -57,7 +59,7 @@ public class ClaudeBatchService
     private long _totalInputTokens;
     private long _totalOutputTokens;
 
-    public ClaudeBatchService(string model = "claude-haiku-4-5-20251001")
+    public ClaudeBatchSummarizer(string model)
     {
         _model = model;
     }
@@ -65,12 +67,49 @@ public class ClaudeBatchService
     public long TotalInputTokens => _totalInputTokens;
     public long TotalOutputTokens => _totalOutputTokens;
 
+    public async Task<List<NodeSummaryResult>> SummarizeAsync(List<EmbeddableNode> nodes)
+    {
+        if (nodes.Count == 0) return [];
+
+        var batchItems = nodes.Select(n => (n.FullName, n.Prompt)).ToList();
+        var sw = Stopwatch.StartNew();
+        var (batchId, idMap) = await SubmitBatchAsync(batchItems);
+
+        var results = await WaitForBatchAsync(batchId, idMap);
+        Console.WriteLine($"Batch completed in {sw.Elapsed:mm\\:ss}. Got {results.Count}/{nodes.Count} results.");
+
+        return nodes
+            .Where(n => results.ContainsKey(n.FullName))
+            .Select(n => new NodeSummaryResult(n, results[n.FullName]))
+            .ToList();
+    }
+
+    public decimal EstimateCostUsd(bool isBatch = false)
+    {
+        var (inputPricePerM, outputPricePerM) = _model switch
+        {
+            var m when m.Contains("haiku") => (0.80m, 4.00m),
+            var m when m.Contains("sonnet") => (3.00m, 15.00m),
+            var m when m.Contains("opus") => (15.00m, 75.00m),
+            _ => (3.00m, 15.00m)
+        };
+
+        if (isBatch)
+        {
+            inputPricePerM /= 2;
+            outputPricePerM /= 2;
+        }
+
+        return (_totalInputTokens / 1_000_000m * inputPricePerM)
+             + (_totalOutputTokens / 1_000_000m * outputPricePerM);
+    }
+
     private OutputConfig BuildOutputConfig() => new()
     {
         Format = new JsonOutputFormat { Schema = SummarySchemaDict }
     };
 
-    public async Task<(string BatchId, Dictionary<string, string> IdMap)> SubmitBatchAsync(List<(string Id, string Prompt)> items)
+    private async Task<(string BatchId, Dictionary<string, string> IdMap)> SubmitBatchAsync(List<(string Id, string Prompt)> items)
     {
         var idMap = new Dictionary<string, string>();
         var requests = items.Select((item, idx) =>
@@ -95,7 +134,7 @@ public class ClaudeBatchService
         return (batch.ID, idMap);
     }
 
-    public async Task<Dictionary<string, SummaryResult>> WaitForBatchAsync(string batchId, Dictionary<string, string> idMap)
+    private async Task<Dictionary<string, SummaryResult>> WaitForBatchAsync(string batchId, Dictionary<string, string> idMap)
     {
         Console.Write("  Waiting for batch");
         while (true)
@@ -143,26 +182,6 @@ public class ClaudeBatchService
         }
 
         return results;
-    }
-
-    public decimal EstimateCostUsd(bool isBatch = false)
-    {
-        var (inputPricePerM, outputPricePerM) = _model switch
-        {
-            var m when m.Contains("haiku") => (0.80m, 4.00m),
-            var m when m.Contains("sonnet") => (3.00m, 15.00m),
-            var m when m.Contains("opus") => (15.00m, 75.00m),
-            _ => (3.00m, 15.00m)
-        };
-
-        if (isBatch)
-        {
-            inputPricePerM /= 2;
-            outputPricePerM /= 2;
-        }
-
-        return (_totalInputTokens / 1_000_000m * inputPricePerM)
-             + (_totalOutputTokens / 1_000_000m * outputPricePerM);
     }
 
     private static string ExtractText(Message message)

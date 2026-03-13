@@ -1,3 +1,4 @@
+using GraphRagCli.Shared;
 using Neo4j.Driver;
 
 namespace GraphRagCli.Features.Ingest.GraphDb;
@@ -63,17 +64,32 @@ public class Neo4jIngestPostProcessor(IDriver driver)
     public async Task MarkStaleDependentsAsync(DateTime runTimestamp)
     {
         await driver
-            .ExecutableQuery(@"
+            .ExecutableQuery($"""
                 MATCH (n)
                 WHERE n.lastIngestedAt = $runTimestamp
                   AND n.embeddingHash IS NOT NULL
                   AND n.bodyHash <> n.embeddingHash
                 WITH collect(n) AS changed
                 UNWIND changed AS c
-                MATCH (c)<-[:CALLS|DEFINES|IMPLEMENTS|REFERENCES|EXTENDS|INHERITS_FROM*1..2]-(dep:Embeddable)
+                MATCH (c)<-[:CALLED_BY|DEFINED_BY|IMPLEMENTS|REFERENCES|EXTENDS|INHERITS_FROM*1..2]-(dep:{NodeLabels.Embeddable})
                 WHERE dep.bodyHash = dep.embeddingHash
-                SET dep.stale = true")
+                SET dep.stale = true
+                """)
             .WithParameters(new { runTimestamp })
+            .ExecuteAsync();
+    }
+
+    // --- Tier computation ---
+
+    public async Task ComputeTiersAsync()
+    {
+        await driver
+            .ExecutableQuery(@"
+                MATCH (n)
+                OPTIONAL MATCH path = ()-[*1..20]->(n)
+                WITH n, length(path) AS pathLength
+                WITH n, COALESCE(max(pathLength), 0) AS tier
+                SET n.tier = tier")
             .ExecuteAsync();
     }
 
@@ -82,26 +98,27 @@ public class Neo4jIngestPostProcessor(IDriver driver)
     public async Task LabelEmbeddableNodesAsync()
     {
         await driver
-            .ExecutableQuery("MATCH (n) WHERE n:Class OR n:Interface OR n:Method OR n:Enum SET n:Embeddable")
+            .ExecutableQuery($"MATCH (n) WHERE n:{NodeLabels.Class} OR n:{NodeLabels.Interface} OR n:{NodeLabels.Method} OR n:{NodeLabels.Enum} SET n:{NodeLabels.Embeddable}")
             .ExecuteAsync();
     }
 
     public async Task<EntryPointResult> LabelEntryPointsAsync()
     {
         await driver
-            .ExecutableQuery(@"
-                MATCH (m:Method)
+            .ExecutableQuery($"""
+                MATCH (m:{NodeLabels.Method})
                 WHERE m.isExtensionMethod = true
                   AND (m.extendedType CONTAINS 'IServiceCollection'
                     OR m.extendedType CONTAINS 'IHostBuilder'
                     OR m.extendedType CONTAINS 'IApplicationBuilder'
                     OR m.extendedType CONTAINS 'IEndpointRouteBuilder')
-                SET m:EntryPoint")
+                SET m:{NodeLabels.EntryPoint}
+                """)
             .ExecuteAsync();
 
         var (linkRecords, _, _) = await driver
             .ExecutableQuery(@"
-                MATCH (iMethod:Method)<-[:DEFINES]-(iface:Interface)<-[:IMPLEMENTS]-(cls:Class)-[:DEFINES]->(cMethod:Method)
+                MATCH (iMethod:Method)-[:DEFINED_BY]->(iface:Interface)<-[:IMPLEMENTS]-(cls:Class)<-[:DEFINED_BY]-(cMethod:Method)
                 WHERE iMethod.name = cMethod.name
                   AND size(split(iMethod.parameters, ',')) = size(split(cMethod.parameters, ','))
                 MERGE (cMethod)-[:IMPLEMENTS_METHOD]->(iMethod)
@@ -111,7 +128,7 @@ public class Neo4jIngestPostProcessor(IDriver driver)
         var linkedImplementations = linkRecords.Single()["count"].As<long>();
 
         var (epRecords, _, _) = await driver
-            .ExecutableQuery("MATCH (e:EntryPoint) RETURN count(e) AS count")
+            .ExecutableQuery($"MATCH (e:{NodeLabels.EntryPoint}) RETURN count(e) AS count")
             .ExecuteAsync();
 
         var entryPoints = epRecords.Single()["count"].As<long>();
@@ -122,7 +139,7 @@ public class Neo4jIngestPostProcessor(IDriver driver)
     public async Task<PublicApiResult> LabelPublicApiAsync(List<string>? nugetProjects)
     {
         var typeCounts = new Dictionary<string, long>();
-        foreach (var (label, display) in new[] { ("Interface", "interfaces"), ("Class", "classes"), ("Enum", "enums") })
+        foreach (var (label, display) in new[] { (NodeLabels.Interface, "interfaces"), (NodeLabels.Class, "classes"), (NodeLabels.Enum, "enums") })
         {
             string query;
             object parameters;
@@ -131,14 +148,14 @@ public class Neo4jIngestPostProcessor(IDriver driver)
             {
                 query = "MATCH (node:" + label + ")-[:BELONGS_TO_NAMESPACE]->(ns:Namespace)-[:BELONGS_TO_PROJECT]->(p:Project) " +
                         "WHERE node.visibility = 'public' AND p.fullName IN $projects " +
-                        "SET node:PublicApi RETURN count(DISTINCT node) AS count";
+                        $"SET node:{NodeLabels.PublicApi} RETURN count(DISTINCT node) AS count";
                 parameters = new { projects = nugetProjects };
             }
             else
             {
                 query = "MATCH (node:" + label + ") " +
                         "WHERE node.visibility = 'public' " +
-                        "SET node:PublicApi RETURN count(node) AS count";
+                        $"SET node:{NodeLabels.PublicApi} RETURN count(node) AS count";
                 parameters = new { };
             }
 
@@ -151,17 +168,18 @@ public class Neo4jIngestPostProcessor(IDriver driver)
         }
 
         var (methodRecords, _, _) = await driver
-            .ExecutableQuery(@"
-                MATCH (parent:PublicApi)-[:DEFINES]->(m:Method)
+            .ExecutableQuery($"""
+                MATCH (m:{NodeLabels.Method})-[:DEFINED_BY]->(parent:{NodeLabels.PublicApi})
                 WHERE m.visibility = 'public'
-                SET m:PublicApi
-                RETURN count(m) AS count")
+                SET m:{NodeLabels.PublicApi}
+                RETURN count(m) AS count
+                """)
             .ExecuteAsync();
 
         var methodCount = methodRecords.Single()["count"].As<long>();
 
         var (totalRecords, _, _) = await driver
-            .ExecutableQuery("MATCH (n:PublicApi) RETURN count(n) AS total")
+            .ExecutableQuery($"MATCH (n:{NodeLabels.PublicApi}) RETURN count(n) AS total")
             .ExecuteAsync();
 
         var total = totalRecords.Single()["total"].As<long>();

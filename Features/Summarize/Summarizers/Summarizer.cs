@@ -1,8 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GraphRagCli.Features.Summarize.Prompts;
 using Microsoft.Extensions.AI;
 
-namespace GraphRagCli.Features.Summarize;
+namespace GraphRagCli.Features.Summarize.Summarizers;
 
 /// <summary>
 /// Executes summarization prompts via IChatClient with structured JSON output.

@@ -1,5 +1,7 @@
 using System.CommandLine;
 using Albatross.CommandLine;
+using GraphRagCli.Features.Embed;
+using GraphRagCli.Shared;
 using GraphRagCli.Shared.Ai;
 using GraphRagCli.Shared.GraphDb;
 
@@ -8,6 +10,7 @@ namespace GraphRagCli.Features.Search;
 public class SearchCommandHandler(
     Neo4jSessionFactory sessionFactory,
     KernelFactory kernelFactory,
+    ModelsConfig modelsConfig,
     ParseResult result,
     SearchParams parameters) : BaseHandler<SearchParams>(result, parameters)
 {
@@ -16,11 +19,16 @@ public class SearchCommandHandler(
         try
         {
             await using var driver = await sessionFactory.CreateDriverAsync(parameters.Database);
-            var repo = new Neo4jSearchRepository(driver);
+            var embedRepo = new Neo4jEmbedRepository(driver);
+            var searchRepo = new Neo4jSearchRepository(driver);
 
-            var kernel = kernelFactory.Create();
-            var embedder = kernelFactory.GetTextEmbedder(kernel);
-            var service = new SearchService(repo, embedder);
+            // Read embedding model from graph metadata, fall back to default
+            var meta = await embedRepo.GetGraphMetaAsync();
+            var modelName = meta?.EmbeddingModel ?? modelsConfig.Defaults.Embedding;
+            var embeddingConfig = modelsConfig.GetEmbeddingModel(modelName);
+
+            var embedder = kernelFactory.CreateTextEmbedder(modelName, embeddingConfig);
+            var service = new SearchService(searchRepo, embedder);
 
             var results = await service.SearchAsync(
                 parameters.Query, parameters.Mode, parameters.Top, parameters.Type);
@@ -55,7 +63,7 @@ public class SearchCommandHandler(
             if (summary.Length > 60) summary = summary[..57] + "...";
             Console.WriteLine($"{r.Score:F4}  {r.Type,-12} {r.FullName,-50} {summary}");
 
-            if (r.Type == "Method" && r.ReturnType != null)
+            if (r.Type == NodeLabels.Method && r.ReturnType != null)
             {
                 var sig = $"{r.ReturnType} {r.Name}({r.Parameters ?? ""})";
                 Console.WriteLine($"         sig: {sig}");

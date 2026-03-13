@@ -1,3 +1,4 @@
+using GraphRagCli.Shared;
 using GraphRagCli.Shared.Ai;
 
 namespace GraphRagCli.Features.Search;
@@ -68,7 +69,7 @@ public class SearchService(ISearchRepository repository, ITextEmbedder embedder)
             }
 
             var centralityBonus = Math.Min((c.PageRank ?? 0) * 0.1, 0.05);
-            var entryPointBonus = c.Labels?.Contains("EntryPoint") == true ? 0.10 : 0.0;
+            var entryPointBonus = c.Labels?.Contains(NodeLabels.EntryPoint) == true ? 0.10 : 0.0;
 
             return c with
             {

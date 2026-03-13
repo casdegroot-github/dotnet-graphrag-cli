@@ -8,9 +8,14 @@ namespace GraphRagCli.Features.Embed;
 public class EmbedService
 {
     public async Task<EmbedResult> EmbedAsync(
-        IDriver driver, ITextEmbedder embedder, EmbedParams parameters)
+        IDriver driver, ITextEmbedder embedder,
+        EmbedParams parameters, string modelName, int dimensions)
     {
         var repo = new Neo4jEmbedRepository(driver);
+
+        // Ensure vector index matches model dimensions
+        await repo.EnsureVectorIndexAsync(dimensions);
+
         var nodes = await repo.GetNodesWithSummariesAsync(parameters.Force);
 
         if (nodes.Count == 0)
@@ -18,6 +23,10 @@ public class EmbedService
 
         var concurrency = parameters.MaxConcurrency is > 0 ? parameters.MaxConcurrency.Value : 4;
         var (embedded, failed) = await EmbedNodesAsync(repo, embedder, nodes, concurrency);
+
+        // Write model metadata to graph
+        await repo.SetGraphMetaAsync(modelName, dimensions);
+
         var centralityComputed = await ComputeCentralityAsync(repo);
 
         return new EmbedResult(nodes.Count, embedded, failed, centralityComputed);

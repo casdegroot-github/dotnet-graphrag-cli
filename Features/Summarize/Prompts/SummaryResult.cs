@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json.Serialization;
 
-namespace GraphRagCli.Features.Summarize;
+namespace GraphRagCli.Features.Summarize.Prompts;
 
 public record SummaryResult(
     [property: JsonPropertyName("summary")]

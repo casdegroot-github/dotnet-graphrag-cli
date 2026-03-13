@@ -36,7 +36,7 @@ public class InitDatabaseHandler(
                     Console.WriteLine();
                     Console.WriteLine("Next steps:");
                     Console.WriteLine($"  dotnet run -- ingest -d {initResult.Name} <path-to-solution-or-project>");
-                    Console.WriteLine($"  dotnet run -- embed -d {initResult.Name} --provider ollama");
+                    Console.WriteLine($"  dotnet run -- embed -d {initResult.Name}");
                     return 0;
             }
         }

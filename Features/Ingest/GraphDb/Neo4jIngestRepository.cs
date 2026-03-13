@@ -215,7 +215,7 @@ public class Neo4jIngestRepository(IDriver driver)
 
     // --- Edge ingestion ---
 
-    public async Task IngestDefinesEdgesAsync(List<MethodInfo> methods, DateTime runTimestamp)
+    public async Task IngestDefinedByEdgesAsync(List<MethodInfo> methods, DateTime runTimestamp)
     {
         foreach (var chunk in methods.Chunk(100))
         {
@@ -227,7 +227,7 @@ public class Neo4jIngestRepository(IDriver driver)
                     OPTIONAL MATCH (i:Interface {fullName: item.containingType})
                     WITH m, coalesce(c, i) AS parent
                     WHERE parent IS NOT NULL
-                    MERGE (parent)-[r:DEFINES]->(m)
+                    MERGE (m)-[r:DEFINED_BY]->(parent)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new
                 {
@@ -308,9 +308,9 @@ public class Neo4jIngestRepository(IDriver driver)
     {
         foreach (var (label, items) in new[]
         {
-            ("Class", classes.Where(c => !string.IsNullOrEmpty(c.Namespace)).Select(c => new { fullName = c.FullName, @namespace = c.Namespace }).ToList()),
-            ("Interface", interfaces.Where(i => !string.IsNullOrEmpty(i.Namespace)).Select(i => new { fullName = i.FullName, @namespace = i.Namespace }).ToList()),
-            ("Enum", enums.Where(e => !string.IsNullOrEmpty(e.Namespace)).Select(e => new { fullName = e.FullName, @namespace = e.Namespace }).ToList())
+            (NodeLabels.Class, classes.Where(c => !string.IsNullOrEmpty(c.Namespace)).Select(c => new { fullName = c.FullName, @namespace = c.Namespace }).ToList()),
+            (NodeLabels.Interface, interfaces.Where(i => !string.IsNullOrEmpty(i.Namespace)).Select(i => new { fullName = i.FullName, @namespace = i.Namespace }).ToList()),
+            (NodeLabels.Enum, enums.Where(e => !string.IsNullOrEmpty(e.Namespace)).Select(e => new { fullName = e.FullName, @namespace = e.Namespace }).ToList())
         })
         {
             foreach (var chunk in items.Chunk(100))
@@ -354,16 +354,18 @@ public class Neo4jIngestRepository(IDriver driver)
         }
     }
 
-    public async Task IngestCallEdgesAsync(List<CallInfo> calls, DateTime runTimestamp)
+    public async Task IngestCalledByEdgesAsync(List<CallInfo> calls, DateTime runTimestamp)
     {
-        foreach (var chunk in calls.Chunk(100))
+        var filtered = calls.Where(c => c.CallerFullName != c.CalleeFullName).ToList();
+
+        foreach (var chunk in filtered.Chunk(100))
         {
             await driver
                 .ExecutableQuery(@"
                     UNWIND $batch AS item
                     MATCH (caller:Method {fullName: item.caller})
                     MATCH (callee:Method {fullName: item.callee})
-                    MERGE (caller)-[r:CALLS]->(callee)
+                    MERGE (callee)-[r:CALLED_BY]->(caller)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new
                 {

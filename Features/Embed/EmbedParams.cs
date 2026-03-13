@@ -6,6 +6,9 @@ namespace GraphRagCli.Features.Embed;
 [Verb<EmbedCommandHandler>("embed", Description = "Generate embeddings from existing summaries and compute centrality")]
 public record EmbedParams
 {
+    [Option(Description = "Embedding model (default: from models.json)")]
+    public string? Model { get; init; }
+
     [Option(Description = "Re-embed all nodes, not just those needing embedding")]
     public bool Force { get; init; }
 

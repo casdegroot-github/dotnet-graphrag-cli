@@ -9,9 +9,9 @@ public record SearchResult(
     string? Namespace,
     string? FilePath,
     double Score,
-    string Type,
-    List<NeighborInfo>? Neighbors = null,
+    string? Type,
     double? PageRank = null,
     List<string>? Labels = null,
     string? Parameters = null,
-    string? ReturnType = null);
+    string? ReturnType = null,
+    List<NeighborInfo>? Neighbors = null);

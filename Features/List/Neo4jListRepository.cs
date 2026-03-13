@@ -1,5 +1,5 @@
-using GraphRagCli.Shared.GraphDb;
 using Neo4j.Driver;
+using Neo4j.Driver.Mapping;
 
 namespace GraphRagCli.Features.List;
 
@@ -7,16 +7,15 @@ public class Neo4jListRepository(IDriver driver)
 {
     public async Task<DatabaseInfo> GetDatabaseInfoAsync()
     {
-        var (countRecords, _, _) = await driver
+        var counts = await driver
             .ExecutableQuery(@"
                 MATCH (n)
                 WITH [l IN labels(n) WHERE l IN ['Project','Namespace','Class','Interface','Method','Enum']][0] AS label
                 WHERE label IS NOT NULL
                 RETURN label, count(*) AS count
                 ORDER BY count DESC")
-            .ExecuteAsync();
-
-        var counts = countRecords.ToDictionary(r => r["label"].As<string>(), r => r["count"].As<long>());
+            .ExecuteAsync()
+            .AsObjectsAsync((string label, long count) => (label, count));
 
         var projects = await driver
             .ExecutableQuery(@"
@@ -28,7 +27,7 @@ public class Neo4jListRepository(IDriver driver)
                        MemberCount
                 ORDER BY p.fullName")
             .ExecuteAsync()
-            .MapAsync<ProjectInfo>();
+            .AsObjectsAsync<ProjectInfo>();
 
         var solutions = await driver
             .ExecutableQuery(@"
@@ -37,22 +36,23 @@ public class Neo4jListRepository(IDriver driver)
                        coalesce(s.searchText, s.summary) AS Summary
                 ORDER BY s.fullName")
             .ExecuteAsync()
-            .MapAsync<SolutionInfo>();
+            .AsObjectsAsync<SolutionInfo>();
 
-        var (embedRecords, _, _) = await driver
+        var embedStats = await driver
             .ExecutableQuery(@"
                 MATCH (n)
                 WHERE any(l IN labels(n) WHERE l IN ['Class','Interface','Method','Enum'])
                 RETURN count(n) AS total, count(n.embedding) AS embedded")
-            .ExecuteAsync();
+            .ExecuteAsync()
+            .AsObjectsAsync((long total, long embedded) => (total, embedded));
 
-        var embedRow = embedRecords.Single();
+        var (total, embedded) = embedStats.Single();
 
         return new DatabaseInfo(
             solutions.ToList(),
-            counts,
+            counts.ToDictionary(c => c.label, c => c.count),
             projects.ToList(),
-            embedRow["total"].As<long>(),
-            embedRow["embedded"].As<long>());
+            total,
+            embedded);
     }
 }
