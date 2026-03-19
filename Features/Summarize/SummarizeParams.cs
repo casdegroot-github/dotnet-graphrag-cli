@@ -22,8 +22,14 @@ public record SummarizeParams
     [Option(Description = "Only process specific tiers (can specify multiple)")]
     public int[]? Tier { get; init; }
 
+    [Option(Description = "Only process a specific node by its elementId")]
+    public string? Id { get; init; }
+
     [Option(Description = "List tier breakdown and exit")]
     public bool ListTiers { get; init; }
+
+    [Option(Description = "Only run tag consolidation (skip summarization)")]
+    public bool ConsolidateTags { get; init; }
 
     [Option(Description = "Custom prompt instruction (overrides default)")]
     public string? Prompt { get; init; }

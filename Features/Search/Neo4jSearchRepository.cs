@@ -18,8 +18,10 @@ public class Neo4jSearchRepository(IDriver driver) : ISearchRepository
                        node.namespace AS Namespace, node.filePath AS FilePath, score AS Score,
                        [l IN labels(node) WHERE l IN ['Class','Interface','Method','Enum','Namespace','Project']][0] AS Type,
                        node.pageRank AS PageRank,
+                       node.tier AS Tier,
                        labels(node) AS Labels,
-                       node.parameters AS Parameters, node.returnType AS ReturnType
+                       node.parameters AS Parameters, node.returnType AS ReturnType,
+                       node.searchText AS SearchText
                 ORDER BY score DESC LIMIT $topK")
             .WithParameters(new
             {
@@ -35,6 +37,7 @@ public class Neo4jSearchRepository(IDriver driver) : ISearchRepository
     public async Task<List<SearchResult>> FulltextSearchAsync(
         string query, int topK, CancellationToken ct = default)
     {
+        var escapedQuery = EscapeLuceneQuery(query);
         var (records, _, _) = await driver
             .ExecutableQuery(@"
                 CALL db.index.fulltext.queryNodes('embeddable_fulltext', $query)
@@ -43,10 +46,12 @@ public class Neo4jSearchRepository(IDriver driver) : ISearchRepository
                        node.namespace AS Namespace, node.filePath AS FilePath, score AS Score,
                        [l IN labels(node) WHERE l IN ['Class','Interface','Method','Enum','Namespace','Project']][0] AS Type,
                        node.pageRank AS PageRank,
+                       node.tier AS Tier,
                        labels(node) AS Labels,
-                       node.parameters AS Parameters, node.returnType AS ReturnType
+                       node.parameters AS Parameters, node.returnType AS ReturnType,
+                       node.searchText AS SearchText
                 ORDER BY score DESC LIMIT $topK")
-            .WithParameters(new { query, topK })
+            .WithParameters(new { query = escapedQuery, topK })
             .ExecuteAsync(ct);
 
         return records.Select(MapSearchResult).ToList();
@@ -60,10 +65,16 @@ public class Neo4jSearchRepository(IDriver driver) : ISearchRepository
         var (records, _, _) = await driver
             .ExecutableQuery($$"""
                 UNWIND $fullNames AS fn
-                MATCH (n:{{NodeLabels.Embeddable}} {fullName: fn})
-                OPTIONAL MATCH (n)-[r]-(neighbor:{{NodeLabels.Embeddable}})
+                MATCH (n {fullName: fn})
+                OPTIONAL MATCH (n)-[r]-(neighbor)
                 RETURN fn AS sourceFullName,
-                       collect(DISTINCT {name: neighbor.name, summary: neighbor.summary, relationship: type(r), neighborFullName: neighbor.fullName}) AS neighbors
+                       collect(DISTINCT {
+                           name: neighbor.name, 
+                           summary: neighbor.summary, 
+                           relationship: type(r), 
+                           neighborFullName: neighbor.fullName,
+                           method: r.method
+                       }) AS neighbors
                 """)
             .WithParameters(new { fullNames })
             .ExecuteAsync(ct);
@@ -72,12 +83,33 @@ public class Neo4jSearchRepository(IDriver driver) : ISearchRepository
             r => r["sourceFullName"].As<string>(),
             r => r["neighbors"].As<List<IDictionary<string, object>>>()
                 .Where(n => n["name"] != null)
-                .Select(n => new NeighborInfo(
-                    n["name"]!.ToString()!,
-                    n["summary"]?.ToString(),
-                    n["relationship"]?.ToString() ?? "RELATED",
-                    n["neighborFullName"]?.ToString()))
+                .Select(n =>
+                {
+                    var relType = n["relationship"]?.ToString() ?? "RELATED";
+                    var method = n["method"]?.ToString();
+                    if (!string.IsNullOrEmpty(method))
+                        relType = $"{relType}({method})";
+
+                    return new NeighborInfo(
+                        n["name"]!.ToString()!,
+                        n["summary"]?.ToString(),
+                        relType,
+                        n["neighborFullName"]?.ToString());
+                })
                 .ToList());
+    }
+
+    private static string EscapeLuceneQuery(string query)
+    {
+        const string specialChars = @"+-&|!(){}[]^""~*?:\/";
+        var escaped = new System.Text.StringBuilder();
+        foreach (var c in query)
+        {
+            if (specialChars.Contains(c))
+                escaped.Append('\\');
+            escaped.Append(c);
+        }
+        return escaped.ToString();
     }
 
     private static SearchResult MapSearchResult(IRecord r) => new(
@@ -89,7 +121,9 @@ public class Neo4jSearchRepository(IDriver driver) : ISearchRepository
         Score: r["Score"].As<double>(),
         Type: r["Type"].As<string?>(),
         PageRank: r["PageRank"].As<double?>(),
+        Tier: r["Tier"].As<int?>(),
         Labels: r["Labels"].As<List<string>?>(),
         Parameters: r["Parameters"].As<string?>(),
-        ReturnType: r["ReturnType"].As<string?>());
+        ReturnType: r["ReturnType"].As<string?>(),
+        SearchText: r["SearchText"].As<string?>());
 }

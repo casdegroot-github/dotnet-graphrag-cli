@@ -71,7 +71,7 @@ public class Neo4jIngestPostProcessor(IDriver driver)
                   AND n.bodyHash <> n.embeddingHash
                 WITH collect(n) AS changed
                 UNWIND changed AS c
-                MATCH (c)<-[:CALLED_BY|DEFINED_BY|IMPLEMENTS|REFERENCES|EXTENDS|INHERITS_FROM*1..2]-(dep:{NodeLabels.Embeddable})
+                MATCH (c)<-[:{RelType.CalledBy}|{RelType.DefinedBy}|{RelType.Implements}|{RelType.ReferencedBy}|{RelType.Extends}|{RelType.InheritsFrom}*1..2]-(dep:{NodeLabels.Embeddable})
                 WHERE dep.bodyHash = dep.embeddingHash
                 SET dep.stale = true
                 """)
@@ -83,14 +83,67 @@ public class Neo4jIngestPostProcessor(IDriver driver)
 
     public async Task ComputeTiersAsync()
     {
-        await driver
-            .ExecutableQuery(@"
-                MATCH (n)
-                OPTIONAL MATCH path = ()-[*1..20]->(n)
-                WITH n, length(path) AS pathLength
-                WITH n, COALESCE(max(pathLength), 0) AS tier
-                SET n.tier = tier")
-            .ExecuteAsync();
+        try { await driver.ExecutableQuery("CALL gds.graph.drop('tier-graph', false)").ExecuteAsync(); }
+        catch { /* stale projection cleanup */ }
+        
+
+        // Clear existing tiers so excluded nodes don't keep stale values
+        await driver.ExecutableQuery("MATCH (n) REMOVE n.tier").ExecuteAsync();
+
+        try
+        {
+            // 1. Project all nodes and relationships (all edges are child→parent, so leaves = sources)
+            await driver.ExecutableQuery(@"
+                CALL gds.graph.project('tier-graph', '*', '*')").ExecuteAsync();
+
+            // 2. SCC — find cycle groups, write componentId to nodes
+            await driver.ExecutableQuery(@"
+                CALL gds.scc.stream('tier-graph')
+                YIELD nodeId, componentId
+                WITH gds.util.asNode(nodeId) AS n, componentId
+                SET n.sccId = componentId").ExecuteAsync();
+
+            // 3. Topological sort — assigns tiers to non-cycle nodes
+            await driver.ExecutableQuery(@"
+                CALL gds.dag.topologicalSort.stream('tier-graph', {
+                    computeMaxDistanceFromSource: true
+                })
+                YIELD nodeId, maxDistanceFromSource
+                WITH gds.util.asNode(nodeId) AS n, toInteger(maxDistanceFromSource) AS tier
+                SET n.tier = tier").ExecuteAsync();
+
+            // 4. Iteratively assign tiers to nodes excluded from topologicalSort
+            //    (cycle nodes and their dependents). Only assign when ALL non-SCC
+            //    children have tiers, ensuring correct ordering.
+            int assigned;
+            do
+            {
+                var (records, _, _) = await driver.ExecutableQuery(@"
+                    MATCH (n) WHERE n.tier IS NULL
+                    OPTIONAL MATCH (untiered)-->(n)
+                        WHERE untiered.tier IS NULL AND untiered.sccId <> n.sccId
+                    WITH n, count(untiered) AS pending
+                    WHERE pending = 0
+                    OPTIONAL MATCH (peer) WHERE peer.sccId = n.sccId AND peer.tier IS NOT NULL
+                    OPTIONAL MATCH (child)-->(n) WHERE child.tier IS NOT NULL
+                    WITH n, COALESCE(max(peer.tier), max(child.tier) + 1, 0) AS tier
+                    SET n.tier = tier
+                    RETURN count(n) AS assigned").ExecuteAsync();
+                assigned = records.Single()["assigned"].As<int>();
+            } while (assigned > 0);
+
+            // 5. Any remaining disconnected nodes get tier 0
+            await driver.ExecutableQuery(@"
+                MATCH (n) WHERE n.tier IS NULL SET n.tier = 0").ExecuteAsync();
+
+            // 6. Clean up temporary property
+            await driver.ExecutableQuery("MATCH (n) REMOVE n.sccId").ExecuteAsync();
+        }
+        finally
+        {
+            try { await driver.ExecutableQuery("CALL gds.graph.drop('tier-graph')").ExecuteAsync(); }
+            catch { /* graph may not exist if projection failed */ }
+        }
     }
 
     // --- Labeling ---
@@ -98,7 +151,7 @@ public class Neo4jIngestPostProcessor(IDriver driver)
     public async Task LabelEmbeddableNodesAsync()
     {
         await driver
-            .ExecutableQuery($"MATCH (n) WHERE n:{NodeLabels.Class} OR n:{NodeLabels.Interface} OR n:{NodeLabels.Method} OR n:{NodeLabels.Enum} SET n:{NodeLabels.Embeddable}")
+            .ExecutableQuery($"MATCH (n) WHERE n:{NodeType.Class} OR n:{NodeType.Interface} OR n:{NodeType.Method} OR n:{NodeType.Enum} SET n:{NodeLabels.Embeddable}")
             .ExecuteAsync();
     }
 
@@ -106,7 +159,7 @@ public class Neo4jIngestPostProcessor(IDriver driver)
     {
         await driver
             .ExecutableQuery($"""
-                MATCH (m:{NodeLabels.Method})
+                MATCH (m:{NodeType.Method})
                 WHERE m.isExtensionMethod = true
                   AND (m.extendedType CONTAINS 'IServiceCollection'
                     OR m.extendedType CONTAINS 'IHostBuilder'
@@ -117,11 +170,11 @@ public class Neo4jIngestPostProcessor(IDriver driver)
             .ExecuteAsync();
 
         var (linkRecords, _, _) = await driver
-            .ExecutableQuery(@"
-                MATCH (iMethod:Method)-[:DEFINED_BY]->(iface:Interface)<-[:IMPLEMENTS]-(cls:Class)<-[:DEFINED_BY]-(cMethod:Method)
+            .ExecutableQuery($@"
+                MATCH (iMethod:Method)-[:{RelType.DefinedBy}]->(iface:Interface)<-[:{RelType.Implements}]-(cls:Class)<-[:{RelType.DefinedBy}]-(cMethod:Method)
                 WHERE iMethod.name = cMethod.name
                   AND size(split(iMethod.parameters, ',')) = size(split(cMethod.parameters, ','))
-                MERGE (cMethod)-[:IMPLEMENTS_METHOD]->(iMethod)
+                MERGE (cMethod)-[:{RelType.ImplementsMethod}]->(iMethod)
                 RETURN count(*) AS count")
             .ExecuteAsync();
 
@@ -139,14 +192,14 @@ public class Neo4jIngestPostProcessor(IDriver driver)
     public async Task<PublicApiResult> LabelPublicApiAsync(List<string>? nugetProjects)
     {
         var typeCounts = new Dictionary<string, long>();
-        foreach (var (label, display) in new[] { (NodeLabels.Interface, "interfaces"), (NodeLabels.Class, "classes"), (NodeLabels.Enum, "enums") })
+        foreach (var (label, display) in new[] { (NodeType.Interface, "interfaces"), (NodeType.Class, "classes"), (NodeType.Enum, "enums") })
         {
             string query;
             object parameters;
 
             if (nugetProjects != null)
             {
-                query = "MATCH (node:" + label + ")-[:BELONGS_TO_NAMESPACE]->(ns:Namespace)-[:BELONGS_TO_PROJECT]->(p:Project) " +
+                query = $"MATCH (node:{label})-[:{RelType.BelongsToNamespace}]->(ns:Namespace)-[:{RelType.BelongsToProject}]->(p:Project) " +
                         "WHERE node.visibility = 'public' AND p.fullName IN $projects " +
                         $"SET node:{NodeLabels.PublicApi} RETURN count(DISTINCT node) AS count";
                 parameters = new { projects = nugetProjects };
@@ -169,7 +222,7 @@ public class Neo4jIngestPostProcessor(IDriver driver)
 
         var (methodRecords, _, _) = await driver
             .ExecutableQuery($"""
-                MATCH (m:{NodeLabels.Method})-[:DEFINED_BY]->(parent:{NodeLabels.PublicApi})
+                MATCH (m:{NodeType.Method})-[:{RelType.DefinedBy}]->(parent:{NodeLabels.PublicApi})
                 WHERE m.visibility = 'public'
                 SET m:{NodeLabels.PublicApi}
                 RETURN count(m) AS count

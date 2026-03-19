@@ -6,14 +6,14 @@ namespace GraphRagCli.Features.Ingest;
 
 public class IngestService(
     ICodeAnalyzer codeAnalyzer,
-    SolutionResolver solutionResolver)
+    PackageResolver packageResolver)
 {
     public async Task<IngestResult> IngestAsync(IDriver driver, string solutionPath, IngestParams parameters)
     {
-        var analysisResults = await codeAnalyzer.AnalyzeSolutionAsync(
+        var analysis = await codeAnalyzer.AnalyzeSolutionAsync(
             solutionPath, parameters.SkipTests, parameters.SkipSamples);
 
-        if (analysisResults.Count == 0)
+        if (analysis.Results.Count == 0)
             return IngestResult.Empty;
 
         var solutionName = Path.GetFileNameWithoutExtension(solutionPath);
@@ -21,14 +21,23 @@ public class IngestService(
         var repo = new Neo4jIngestRepository(driver);
         var postProcessor = new Neo4jIngestPostProcessor(driver);
 
-        var projectStats = await IngestAsync(repo, solutionName, analysisResults, runTimestamp);
+        var projectStats = await IngestAsync(repo, solutionName, analysis.Results, runTimestamp);
+
+        var packageMap = packageResolver.ResolvePackages(solutionPath, analysis.ProjectFilePaths);
+        if (packageMap.Count > 0)
+            await repo.IngestPackageNodesAsync(packageMap, runTimestamp);
+
+        var nugetProjects = packageMap.Count > 0
+            ? packageMap.Values.SelectMany(p => p).ToList()
+            : null;
+
         var reconcileResult = await ReconcileAsync(postProcessor, runTimestamp);
-        var labelResult = await LabelAsync(postProcessor, solutionPath, parameters);
+        var labelResult = await LabelAsync(postProcessor, nugetProjects);
         await postProcessor.ComputeTiersAsync();
 
         return new IngestResult(
             solutionName, projectStats, reconcileResult,
-            labelResult.EntryPoints, labelResult.NugetProjectCount, labelResult.PublicApi);
+            labelResult.EntryPoints, labelResult.PublicApi, packageMap.Count);
     }
 
     private static async Task<List<ProjectIngestStats>> IngestAsync(
@@ -55,6 +64,7 @@ public class IngestService(
             await repo.IngestNamespaceMembershipEdgesAsync(r.Classes, r.Interfaces, r.Enums, runTimestamp);
             await repo.IngestExtensionMethodEdgesAsync(r.Methods, runTimestamp);
             await repo.IngestCalledByEdgesAsync(r.Calls, runTimestamp);
+            await repo.IngestRegistrationEdgesAsync(r.References, runTimestamp);
             await repo.IngestReferenceEdgesAsync(r.References, runTimestamp);
 
             projectStats.Add(new ProjectIngestStats(name, r.Namespaces.Count, r.Classes.Count,
@@ -75,20 +85,17 @@ public class IngestService(
         return new ReconcileResult(transferred, staleEdges, staleNodes);
     }
 
-    private async Task<LabelResult> LabelAsync(
-        Neo4jIngestPostProcessor postProcessor, string solutionPath, IngestParams parameters)
+    private static async Task<LabelResult> LabelAsync(
+        Neo4jIngestPostProcessor postProcessor, List<string>? nugetProjects)
     {
         await postProcessor.LabelEmbeddableNodesAsync();
         var entryPointResult = await postProcessor.LabelEntryPointsAsync();
-
-        var nugetProjects = solutionResolver.ResolveNuGetProjects(parameters.NugetSlnf, solutionPath);
         var publicApiResult = await postProcessor.LabelPublicApiAsync(nugetProjects);
 
-        return new LabelResult(entryPointResult, nugetProjects?.Count, publicApiResult);
+        return new LabelResult(entryPointResult, publicApiResult);
     }
 
-    private record LabelResult(
-        EntryPointResult EntryPoints, int? NugetProjectCount, PublicApiResult PublicApi);
+    private record LabelResult(EntryPointResult EntryPoints, PublicApiResult PublicApi);
 }
 
 public record IngestResult(
@@ -96,12 +103,12 @@ public record IngestResult(
     List<ProjectIngestStats> Projects,
     ReconcileResult Reconcile,
     EntryPointResult EntryPoints,
-    int? NugetProjectCount,
-    PublicApiResult PublicApi)
+    PublicApiResult PublicApi,
+    int PackageCount)
 {
     public static readonly IngestResult Empty = new(
-        "", [], new ReconcileResult(0, 0, 0), new EntryPointResult(0, 0), null,
-        new PublicApiResult(new Dictionary<string, long>(), 0, 0));
+        "", [], new ReconcileResult(0, 0, 0), new EntryPointResult(0, 0),
+        new PublicApiResult(new Dictionary<string, long>(), 0, 0), 0);
 
     public bool IsEmpty => Projects.Count == 0;
 }

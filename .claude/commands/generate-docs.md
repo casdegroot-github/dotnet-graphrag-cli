@@ -1,87 +1,58 @@
-Regenerate the `docs/` directory from scratch using the code intelligence graph in Neo4j. Delete all existing docs first — they are always fully derivable from the graph.
+Generate documentation from a code intelligence graph in Neo4j.
 
-Use the Neo4j MCP server (`read-cypher`) as your primary source. Use the project's search CLI if available for semantic questions.
+**Arguments:** `$ARGUMENTS`
+Parse from arguments: database name (required), output folder (default: `docs/{solutionName}/`), audience context (optional).
 
-## Approach: Top-down graph traversal
+---
 
-The graph is a hierarchy with tiers. Start at the top (solution/project) and walk down. Each level of the hierarchy maps to a level of documentation detail.
+## Setup
 
-### Step 1: Read the top
+1. Delete the output folder if it exists — docs are always fully regenerable.
+2. Query `get-schema` on the target database's MCP server to discover the graph structure.
+3. **Documentation interview** — Use `AskUserQuestion` to understand what kind of docs to generate. Adapt questions to what the graph reveals, but cover:
+   - **What kind of documentation?** — API reference, architecture overview, onboarding guide, integration guide, troubleshooting, or a mix?
+   - **Who are the readers?** — team members, external consumers, new hires, etc.
+   - **What should readers be able to do after reading?** — understand the system, integrate with it, contribute to it?
+   - **Areas to emphasize or skip?** — focus areas, legacy to call out, things to ignore
+   - **Depth preference?** — high-level overview only, or down to method-level detail?
 
-Query the highest-tier nodes (solution, project). Their summaries give you the system overview — what it does, what technologies it uses, how the pieces fit together.
+   Pick 3-4 relevant questions, don't ask all. Store answers as `docContext` — this shapes every decision that follows.
+4. **Community detection as a hint** — Run Leiden community detection (via GDS) to get a sense of natural groupings. Project the relevant node labels and relationship types as undirected, run `gds.leiden.stream`, then drop the projection. Use the resulting communities as a *signal* — not the final answer. Communities that are too large should be split; singletons folded into related groups.
+5. **Define initial logical groups** — Query only project names and summaries. Using community hints, naming patterns, and `docContext`, define logical groups based on **what makes sense for the requested documentation type** — not code structure. An API reference groups by endpoint/service; an architecture overview groups by subsystem; an onboarding guide groups by workflow. Subfolders are fine when they aid navigation. The primary goal is that the resulting docs are **easy to read and navigate for the target audience**. Create the initial folder structure with placeholder pages. Present it to the user via `AskUserQuestion`, iterate until approved.
 
-```
-MATCH (n) WHERE n:Solution OR n:Project
-RETURN n.fullName, n.summary, n.tier, labels(n)
-ORDER BY n.tier DESC
-```
+---
 
-### Step 2: Walk down to namespaces/modules
+## Launch doc-writer subagents
 
-Query the next level — namespaces, modules, or packages. These reveal the major subsystems and features. Their summaries describe what each area does.
+After setup is complete, launch one subagent per top-level logical group. Each subagent is autonomous and may launch its own subagents.
 
-```
-MATCH (n:Namespace)
-RETURN n.fullName, n.summary, n.tier
-ORDER BY n.tier DESC
-```
-
-Group related namespaces. This grouping determines your doc structure — each logical group becomes a page or section.
-
-### Step 3: Walk into types and methods
-
-For each subsystem, query its children — classes, interfaces, enums, methods. Their summaries explain how things actually work.
+**CRITICAL: Every subagent MUST receive the full `doc-writer-agent` instructions.** Read the file `.claude/agents/doc-writer-agent.md` and include its **entire contents verbatim** at the start of each subagent prompt. Then append the following context block:
 
 ```
-MATCH (parent:Namespace)--(child)
-WHERE parent.fullName = '...'
-RETURN child.fullName, child.summary, labels(child)
+---
+## Your assignment
+
+**Scope:** {which projects/namespaces/types this agent covers}
+**Output folder:** {absolute path to this agent's output folder}
+**Breadcrumbs:** {where this agent sits in the doc tree, e.g. "You are writing the 'Ingest Pipeline' section, part of 'Pipeline', within the GraphRagCli docs"}
+**Full docs TOC:** {file names + titles for all pages, for cross-linking}
+**docContext:** {the interview answers from setup}
+**MCP server:** {mcp server name} on the {database} database
+**Database name:** {database}
 ```
 
-Follow relationships to understand data flow:
-```
-MATCH (n)-[r]-(m) WHERE n.fullName = '...'
-RETURN type(r), m.fullName, m.summary
-```
+Run subagents in the background. When all complete, extract their written files (subagents may have permission issues — if so, extract content from their transcripts and write files yourself).
 
-### Step 4: Check cross-cutting concerns
+---
 
-Query for patterns that span multiple subsystems:
-- Entry points / DI registrations
-- Shared utilities and base classes
-- External integrations
-- Configuration types
+## Final pass
 
-These become reference docs.
+Once all subagents have completed and all files are written:
 
-## Writing
-
-Based on the traversal, generate docs. Let the graph's hierarchy determine the folder structure — don't use a fixed template. A small project might need 3 pages, a large one 15.
-
-**Overview page** (from top-tier nodes):
-- What the system does (top-level summary)
-- Mermaid diagram of the main data/control flow
-- Project structure (from namespace hierarchy)
-- Links to all deeper docs
-
-**Subsystem pages** (from mid-tier namespaces):
-- What this subsystem does (namespace summary)
-- Mermaid diagram (sequenceDiagram for linear flows, flowchart for branching)
-- Walkthrough referencing actual class/method names
-- Non-obvious behavior from summaries
-- Key components table: `| Component | Role |`
-
-**Reference pages** (from cross-cutting queries):
-- Tabular format for schemas, properties, config
-- No overlap with subsystem pages — link instead
-
-## Rules
-
-- Every claim traces to a graph node or relationship. Don't invent.
-- Never repeat across pages. One canonical location, link everywhere else.
-- Mermaid for all diagrams. One concept per diagram.
-- Tables over prose for structured data.
-- Use the graph's own language from summaries — don't rephrase it worse.
-- Every page starts with: `> *Generated from the code intelligence graph.*`
-- Name docs after what they describe, not code structure.
-- After writing, verify cross-references and update README if it links to docs.
+1. **Load the writing rules.** Read `.claude/agents/doc-writer-agent.md` and follow its Writing Rules, Querying Principles, and diagram guidelines when writing the root pages below. These pages must meet the same quality bar as the subagent-written pages.
+2. **Read all generated child pages** to understand what was actually produced.
+3. **Query the graph** for root-level data (node counts, relationship counts, label counts, tier distribution, top PageRank nodes, etc.) to ground the overview pages in real data — not summaries of summaries.
+4. **Write `index.md`** — project overview, how-it-works diagram, graph statistics, quick start, architecture diagram, documentation nav table. Every claim must trace to graph data or a child page.
+5. **Write `design-decisions.md`** (or equivalent) — cross-cutting architectural choices grounded in graph evidence (relationship patterns, tier distribution, interface/implementation structure, DI registration edges, etc.).
+6. Add "See also" cross-links where related topics exist on other pages.
+7. Verify no broken relative links (use a script to check all `[text](path.md)` links resolve).

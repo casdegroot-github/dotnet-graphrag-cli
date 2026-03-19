@@ -77,7 +77,7 @@ public class ClaudeBatchSummarizer : INodeSummarizer
         var sw = Stopwatch.StartNew();
 
         var chunks = nodes
-            .Select(n => (n.FullName, n.Prompt))
+            .Select(n => (Id: n.SafeFullName, n.Prompt))
             .Chunk(MaxBatchSize)
             .ToArray();
 
@@ -91,14 +91,17 @@ public class ClaudeBatchSummarizer : INodeSummarizer
             var chunkResults = await WaitForBatchAsync(batchId, idMap);
 
             foreach (var kv in chunkResults)
-                allResults[kv.Key] = kv.Value;
+            {
+                if (kv.Key != null)
+                    allResults[kv.Key] = kv.Value;
+            }
         }
 
         Console.WriteLine($"Batch completed in {sw.Elapsed:mm\\:ss}. Got {allResults.Count}/{nodes.Count} results.");
 
         return nodes
-            .Where(n => allResults.ContainsKey(n.FullName))
-            .Select(n => new NodeSummaryResult(n, allResults[n.FullName]))
+            .Where(n => allResults.ContainsKey(n.SafeFullName))
+            .Select(n => new NodeSummaryResult(n, allResults[n.SafeFullName]))
             .ToList();
     }
 
@@ -173,30 +176,50 @@ public class ClaudeBatchSummarizer : INodeSummarizer
         }
 
         var results = new Dictionary<string, SummaryResult>();
-        await foreach (var line in _client.Messages.Batches.ResultsStreaming(new BatchResultsParams { MessageBatchID = batchId }))
+        try
         {
-            if (!line.Result.TryPickSucceeded(out var succeeded))
+            await foreach (var line in _client.Messages.Batches.ResultsStreaming(new BatchResultsParams { MessageBatchID = batchId }))
             {
-                var resultType = line.Result.Type.ToString();
-                var resultJson = line.Result.Json.ToString();
-                Console.WriteLine($"  Warning: non-succeeded result for {line.CustomID}, type={resultType}, json={resultJson[..Math.Min(200, resultJson.Length)]}");
-                continue;
-            }
+                if (line?.CustomID == null) continue;
 
-            var usage = succeeded.Message.Usage;
-            Interlocked.Add(ref _totalInputTokens, usage.InputTokens);
-            Interlocked.Add(ref _totalOutputTokens, usage.OutputTokens);
+                if (!line.Result.TryPickSucceeded(out var succeeded))
+                {
+                    var resultType = line.Result.Type.ToString();
+                    var errorMsg = "Unknown error";
+                    
+                    if (line.Result.TryPickErrored(out var error))
+                    {
+                        // Fallback to ToString() if specific properties are unknown
+                        errorMsg = error.Error?.ToString() ?? "Unknown error object";
+                    }
+                    var originalId = idMap.GetValueOrDefault(line.CustomID, line.CustomID);
+                    Console.WriteLine($"  Warning: node '{originalId}' failed with {resultType}. {errorMsg}");
+                    continue;
+                }
 
-            var text = ExtractText(succeeded.Message);
-            try
-            {
-                var originalId = idMap.GetValueOrDefault(line.CustomID, line.CustomID);
-                results[originalId] = ParseResponse(text);
+                var usage = succeeded.Message.Usage;
+                Interlocked.Add(ref _totalInputTokens, usage.InputTokens);
+                Interlocked.Add(ref _totalOutputTokens, usage.OutputTokens);
+
+                var text = ExtractText(succeeded.Message);
+                try
+                {
+                    var originalId = idMap.GetValueOrDefault(line.CustomID, line.CustomID);
+                    if (originalId != null)
+                    {
+                        results[originalId] = ParseResponse(text);
+                    }
+                }
+                catch
+                {
+                    var originalId = idMap.GetValueOrDefault(line.CustomID, line.CustomID);
+                    Console.WriteLine($"  Warning: failed to parse result for '{originalId}'");
+                }
             }
-            catch
-            {
-                Console.WriteLine($"  Warning: failed to parse result for {line.CustomID}");
-            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Error while streaming batch results: {ex.Message}");
         }
 
         return results;

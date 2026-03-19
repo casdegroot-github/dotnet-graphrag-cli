@@ -7,6 +7,26 @@ public class Neo4jIngestRepository(IDriver driver)
 {
     // --- Node ingestion ---
 
+    public async Task IngestPackageNodesAsync(Dictionary<string, List<string>> packageMap, DateTime runTimestamp)
+    {
+        foreach (var (packageId, projectNames) in packageMap)
+        {
+            await driver
+                .ExecutableQuery($"MERGE (pkg:{NodeType.Package} {{fullName: $packageId}}) SET pkg.needsSummary = true, pkg.lastIngestedAt = $runTimestamp")
+                .WithParameters(new { packageId, runTimestamp })
+                .ExecuteAsync();
+
+            await driver
+                .ExecutableQuery($@"
+                    UNWIND $projects AS projName
+                    MATCH (pkg:{NodeType.Package} {{fullName: $packageId}}), (p:{NodeType.Project} {{fullName: projName}})
+                    MERGE (p)-[:{RelType.BelongsToPackage}]->(pkg)
+                    SET p.lastIngestedAt = $runTimestamp")
+                .WithParameters(new { packageId, projects = projectNames, runTimestamp })
+                .ExecuteAsync();
+        }
+    }
+
     public async Task IngestSolutionNodeAsync(string solutionName, IEnumerable<string> projectNames)
     {
         await driver
@@ -15,10 +35,10 @@ public class Neo4jIngestRepository(IDriver driver)
             .ExecuteAsync();
 
         await driver
-            .ExecutableQuery(@"
+            .ExecutableQuery($@"
                 UNWIND $projects AS projName
-                MATCH (s:Solution {fullName: $solution}), (p:Project {fullName: projName})
-                MERGE (p)-[:BELONGS_TO_SOLUTION]->(s)")
+                MATCH (s:Solution {{fullName: $solution}}), (p:Project {{fullName: projName}})
+                MERGE (p)-[:{RelType.BelongsToSolution}]->(s)")
             .WithParameters(new { solution = solutionName, projects = projectNames.ToList() })
             .ExecuteAsync();
     }
@@ -36,18 +56,24 @@ public class Neo4jIngestRepository(IDriver driver)
         foreach (var chunk in namespaces.Chunk(100))
         {
             await driver
-                .ExecutableQuery(@"
+                .ExecutableQuery($@"
                     UNWIND $batch AS item
-                    MERGE (n:Namespace {fullName: item.name})
-                    SET n.filePath = item.filePath,
+                    MERGE (n:Namespace {{fullName: item.name}})
+                    SET n.name = item.shortName,
+                        n.filePath = item.filePath,
                         n.lastIngestedAt = $runTimestamp
                     WITH n, item
-                    MATCH (p:Project {fullName: $project})
-                    MERGE (n)-[r:BELONGS_TO_PROJECT]->(p)
+                    MATCH (p:Project {{fullName: $project}})
+                    MERGE (n)-[r:{RelType.BelongsToProject}]->(p)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new
                 {
-                    batch = chunk.Select(n => new { name = n.Name, filePath = n.FilePath }).ToList(),
+                    batch = chunk.Select(n => new
+                    {
+                        name = n.Name,
+                        shortName = n.Name.Contains('.') ? n.Name[(n.Name.LastIndexOf('.') + 1)..] : n.Name,
+                        filePath = n.FilePath
+                    }).ToList(),
                     project = projectName,
                     runTimestamp
                 })
@@ -142,6 +168,7 @@ public class Neo4jIngestRepository(IDriver driver)
                         e.filePath = item.filePath,
                         e.visibility = item.visibility,
                         e.members = item.members,
+                        e.sourceText = item.sourceText,
                         e.needsSummary = CASE WHEN e.bodyHash IS NULL OR e.bodyHash <> item.bodyHash THEN true ELSE e.needsSummary END,
                         e.bodyHash = item.bodyHash,
                         e.lastIngestedAt = $runTimestamp")
@@ -155,7 +182,8 @@ public class Neo4jIngestRepository(IDriver driver)
                         filePath = e.FilePath,
                         visibility = e.Visibility,
                         members = string.Join(", ", e.Members),
-                        bodyHash = Hasher.Hash(string.Join(", ", e.Members))
+                        sourceText = e.SourceText,
+                        bodyHash = Hasher.HashCodeBody(e.SourceText)
                     }).ToList(),
                     runTimestamp
                 })
@@ -220,14 +248,14 @@ public class Neo4jIngestRepository(IDriver driver)
         foreach (var chunk in methods.Chunk(100))
         {
             await driver
-                .ExecutableQuery(@"
+                .ExecutableQuery($@"
                     UNWIND $batch AS item
-                    MATCH (m:Method {fullName: item.fullName})
-                    OPTIONAL MATCH (c:Class {fullName: item.containingType})
-                    OPTIONAL MATCH (i:Interface {fullName: item.containingType})
+                    MATCH (m:Method {{fullName: item.fullName}})
+                    OPTIONAL MATCH (c:Class {{fullName: item.containingType}})
+                    OPTIONAL MATCH (i:Interface {{fullName: item.containingType}})
                     WITH m, coalesce(c, i) AS parent
                     WHERE parent IS NOT NULL
-                    MERGE (m)-[r:DEFINED_BY]->(parent)
+                    MERGE (m)-[r:{RelType.DefinedBy}]->(parent)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new
                 {
@@ -252,11 +280,11 @@ public class Neo4jIngestRepository(IDriver driver)
         foreach (var chunk in batch.Chunk(100))
         {
             await driver
-                .ExecutableQuery(@"
+                .ExecutableQuery($@"
                     UNWIND $batch AS item
-                    MATCH (c:Class {fullName: item.child})
-                    MATCH (base:Class {fullName: item.parent})
-                    MERGE (c)-[r:INHERITS_FROM]->(base)
+                    MATCH (c:Class {{fullName: item.child}})
+                    MATCH (base:Class {{fullName: item.parent}})
+                    MERGE (c)-[r:{RelType.InheritsFrom}]->(base)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new { batch = chunk.ToList(), runTimestamp })
                 .ExecuteAsync();
@@ -272,11 +300,11 @@ public class Neo4jIngestRepository(IDriver driver)
         foreach (var chunk in batch.Chunk(100))
         {
             await driver
-                .ExecutableQuery(@"
+                .ExecutableQuery($@"
                     UNWIND $batch AS item
-                    MATCH (c:Class {fullName: item.class})
-                    MATCH (i:Interface {fullName: item.iface})
-                    MERGE (c)-[r:IMPLEMENTS]->(i)
+                    MATCH (c:Class {{fullName: item.class}})
+                    MATCH (i:Interface {{fullName: item.iface}})
+                    MERGE (c)-[r:{RelType.Implements}]->(i)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new { batch = chunk.ToList(), runTimestamp })
                 .ExecuteAsync();
@@ -292,11 +320,11 @@ public class Neo4jIngestRepository(IDriver driver)
         foreach (var chunk in batch.Chunk(100))
         {
             await driver
-                .ExecutableQuery(@"
+                .ExecutableQuery($@"
                     UNWIND $batch AS item
-                    MATCH (i:Interface {fullName: item.child})
-                    MATCH (base:Interface {fullName: item.parent})
-                    MERGE (i)-[r:INHERITS_FROM]->(base)
+                    MATCH (i:Interface {{fullName: item.child}})
+                    MATCH (base:Interface {{fullName: item.parent}})
+                    MERGE (i)-[r:{RelType.InheritsFrom}]->(base)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new { batch = chunk.ToList(), runTimestamp })
                 .ExecuteAsync();
@@ -308,9 +336,9 @@ public class Neo4jIngestRepository(IDriver driver)
     {
         foreach (var (label, items) in new[]
         {
-            (NodeLabels.Class, classes.Where(c => !string.IsNullOrEmpty(c.Namespace)).Select(c => new { fullName = c.FullName, @namespace = c.Namespace }).ToList()),
-            (NodeLabels.Interface, interfaces.Where(i => !string.IsNullOrEmpty(i.Namespace)).Select(i => new { fullName = i.FullName, @namespace = i.Namespace }).ToList()),
-            (NodeLabels.Enum, enums.Where(e => !string.IsNullOrEmpty(e.Namespace)).Select(e => new { fullName = e.FullName, @namespace = e.Namespace }).ToList())
+            (NodeType.Class, classes.Where(c => !string.IsNullOrEmpty(c.Namespace)).Select(c => new { fullName = c.FullName, @namespace = c.Namespace }).ToList()),
+            (NodeType.Interface, interfaces.Where(i => !string.IsNullOrEmpty(i.Namespace)).Select(i => new { fullName = i.FullName, @namespace = i.Namespace }).ToList()),
+            (NodeType.Enum, enums.Where(e => !string.IsNullOrEmpty(e.Namespace)).Select(e => new { fullName = e.FullName, @namespace = e.Namespace }).ToList())
         })
         {
             foreach (var chunk in items.Chunk(100))
@@ -320,7 +348,7 @@ public class Neo4jIngestRepository(IDriver driver)
                         UNWIND $batch AS item
                         MATCH (node:{label} {{fullName: item.fullName}})
                         MATCH (n:Namespace {{fullName: item.namespace}})
-                        MERGE (node)-[r:BELONGS_TO_NAMESPACE]->(n)
+                        MERGE (node)-[r:{RelType.BelongsToNamespace}]->(n)
                         SET r.lastIngestedAt = $runTimestamp")
                     .WithParameters(new { batch = chunk.ToList(), runTimestamp })
                     .ExecuteAsync();
@@ -336,14 +364,14 @@ public class Neo4jIngestRepository(IDriver driver)
         foreach (var chunk in extensionMethods.Chunk(100))
         {
             await driver
-                .ExecutableQuery(@"
+                .ExecutableQuery($@"
                     UNWIND $batch AS item
-                    MATCH (m:Method {fullName: item.method})
-                    OPTIONAL MATCH (target:Class {fullName: item.targetType})
-                    OPTIONAL MATCH (targetI:Interface {fullName: item.targetType})
+                    MATCH (m:Method {{fullName: item.method}})
+                    OPTIONAL MATCH (target:Class {{fullName: item.targetType}})
+                    OPTIONAL MATCH (targetI:Interface {{fullName: item.targetType}})
                     WITH m, coalesce(target, targetI) AS t
                     WHERE t IS NOT NULL
-                    MERGE (m)-[r:EXTENDS]->(t)
+                    MERGE (m)-[r:{RelType.Extends}]->(t)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new
                 {
@@ -361,15 +389,44 @@ public class Neo4jIngestRepository(IDriver driver)
         foreach (var chunk in filtered.Chunk(100))
         {
             await driver
-                .ExecutableQuery(@"
+                .ExecutableQuery($@"
                     UNWIND $batch AS item
-                    MATCH (caller:Method {fullName: item.caller})
-                    MATCH (callee:Method {fullName: item.callee})
-                    MERGE (callee)-[r:CALLED_BY]->(caller)
+                    MATCH (caller:Method {{fullName: item.caller}})
+                    MATCH (callee:Method {{fullName: item.callee}})
+                    MERGE (callee)-[r:{RelType.CalledBy}]->(caller)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new
                 {
                     batch = chunk.Select(c => new { caller = c.CallerFullName, callee = c.CalleeFullName }).ToList(),
+                    runTimestamp
+                })
+                .ExecuteAsync();
+        }
+    }
+
+    public async Task IngestRegistrationEdgesAsync(List<ReferenceInfo> references, DateTime runTimestamp)
+    {
+        var registrations = references
+            .Where(r => r.Context == "registration")
+            .ToList();
+
+        if (registrations.Count == 0) return;
+
+        foreach (var chunk in registrations.Chunk(100))
+        {
+            await driver
+                .ExecutableQuery($@"
+                    UNWIND $batch AS item
+                    MATCH (m:Method {{fullName: item.source}})
+                    OPTIONAL MATCH (target:Class {{fullName: item.target}})
+                    OPTIONAL MATCH (targetI:Interface {{fullName: item.target}})
+                    WITH m, coalesce(target, targetI) AS t, item
+                    WHERE t IS NOT NULL
+                    MERGE (t)-[r:{RelType.RegisteredBy} {{method: coalesce(item.member, '')}}]->(m)
+                    SET r.lastIngestedAt = $runTimestamp")
+                .WithParameters(new
+                {
+                    batch = chunk.Select(r => new { source = r.SourceFullName, target = r.TargetTypeFullName, member = r.MemberName }).ToList(),
                     runTimestamp
                 })
                 .ExecuteAsync();
@@ -381,19 +438,19 @@ public class Neo4jIngestRepository(IDriver driver)
         foreach (var chunk in references.Chunk(100))
         {
             await driver
-                .ExecutableQuery(@"
+                .ExecutableQuery($@"
                     UNWIND $batch AS item
-                    MATCH (m:Method {fullName: item.source})
-                    OPTIONAL MATCH (target:Class {fullName: item.target})
-                    OPTIONAL MATCH (targetI:Interface {fullName: item.target})
-                    OPTIONAL MATCH (targetE:Enum {fullName: item.target})
+                    MATCH (m:Method {{fullName: item.source}})
+                    OPTIONAL MATCH (target:Class {{fullName: item.target}})
+                    OPTIONAL MATCH (targetI:Interface {{fullName: item.target}})
+                    OPTIONAL MATCH (targetE:Enum {{fullName: item.target}})
                     WITH m, coalesce(target, targetI, targetE) AS t, item
                     WHERE t IS NOT NULL
-                    MERGE (m)-[r:REFERENCES {context: item.context}]->(t)
+                    MERGE (t)-[r:{RelType.ReferencedBy} {{context: item.context, member: coalesce(item.member, '')}}]->(m)
                     SET r.lastIngestedAt = $runTimestamp")
                 .WithParameters(new
                 {
-                    batch = chunk.Select(r => new { source = r.SourceFullName, target = r.TargetTypeFullName, context = r.Context }).ToList(),
+                    batch = chunk.Select(r => new { source = r.SourceFullName, target = r.TargetTypeFullName, context = r.Context, member = r.MemberName }).ToList(),
                     runTimestamp
                 })
                 .ExecuteAsync();

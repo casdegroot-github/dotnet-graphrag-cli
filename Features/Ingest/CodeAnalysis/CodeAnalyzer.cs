@@ -5,7 +5,7 @@ namespace GraphRagCli.Features.Ingest.Analysis;
 
 public class CodeAnalyzer : ICodeAnalyzer
 {
-    public async Task<Dictionary<string, AnalysisResult>> AnalyzeSolutionAsync(
+    public async Task<SolutionAnalysis> AnalyzeSolutionAsync(
         string solutionPath, bool skipTests, bool skipSamples)
     {
         Console.WriteLine($"Loading: {solutionPath}");
@@ -31,10 +31,14 @@ public class CodeAnalyzer : ICodeAnalyzer
         }
 
         var results = new Dictionary<string, AnalysisResult>();
+        var projectFilePaths = new List<(string Name, string FilePath)>();
 
         foreach (var project in projects)
         {
             var projectName = project.Name;
+
+            if (project.FilePath != null)
+                projectFilePaths.Add((projectName, project.FilePath));
 
             if (skipTests && IsTestProject(project))
             {
@@ -70,11 +74,17 @@ public class CodeAnalyzer : ICodeAnalyzer
                 Console.WriteLine($"  (no classes/interfaces found, skipping)");
         }
 
-        return results;
+        return new SolutionAnalysis(results, projectFilePaths);
     }
 
     static bool IsTestProject(Project project)
     {
+        // Check project name for common test suffixes
+        if (project.Name.EndsWith(".Tests", StringComparison.OrdinalIgnoreCase) ||
+            project.Name.EndsWith(".Test", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Check for test framework references in resolved assemblies
         var testIndicators = new[] { "Microsoft.NET.Test.Sdk", "xunit", "nunit", "mstest", "BenchmarkDotNet" };
         return project.MetadataReferences
             .Any(r => testIndicators.Any(t => r.Display?.Contains(t, StringComparison.OrdinalIgnoreCase) == true));

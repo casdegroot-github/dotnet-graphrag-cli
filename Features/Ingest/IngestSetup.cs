@@ -11,6 +11,7 @@ public static class IngestSetup
         MSBuildLocator.RegisterDefaults();
 
         services.AddSingleton<SolutionResolver>();
+        services.AddSingleton<PackageResolver>();
         services.AddSingleton<ICodeAnalyzer, CodeAnalyzer>();
         services.AddSingleton<IngestService>();
 

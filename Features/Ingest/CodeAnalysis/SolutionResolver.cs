@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace GraphRagCli.Features.Ingest.Analysis;
 
 public class SolutionResolver
@@ -36,32 +34,5 @@ public class SolutionResolver
         }
 
         return null;
-    }
-
-    public List<string>? ResolveNuGetProjects(string? explicitSlnfPath, string solutionPath)
-    {
-        var slnfPath = explicitSlnfPath;
-        if (slnfPath == null)
-        {
-            var solutionDir = Path.GetDirectoryName(solutionPath)!;
-            slnfPath = Directory.GetFiles(solutionDir, "*.NuGet.slnf", SearchOption.TopDirectoryOnly).FirstOrDefault()
-                    ?? Directory.GetFiles(solutionDir, "*.slnf", SearchOption.TopDirectoryOnly).FirstOrDefault();
-        }
-
-        if (slnfPath == null || !File.Exists(slnfPath)) return null;
-
-        var json = JsonDocument.Parse(File.ReadAllText(slnfPath));
-        var projects = json.RootElement
-            .GetProperty("solution")
-            .GetProperty("projects")
-            .EnumerateArray()
-            .Select(p => Path.GetFileNameWithoutExtension(p.GetString()!))
-            .ToList();
-
-        Console.WriteLine($"  NuGet .slnf: {slnfPath}");
-        foreach (var p in projects)
-            Console.WriteLine($"    - {p}");
-
-        return projects;
     }
 }

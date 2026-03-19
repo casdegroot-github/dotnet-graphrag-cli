@@ -21,7 +21,8 @@ public class Summarizer(IChatClient chatClient, string? model = null)
     {
         ResponseFormat = ChatResponseFormat.ForJsonSchema<SummaryResult>(),
         Temperature = 0f,
-        ModelId = model
+        ModelId = model,
+        MaxOutputTokens = 8192
     };
 
     public async Task<SummaryResult> SummarizeAsync(string prompt)

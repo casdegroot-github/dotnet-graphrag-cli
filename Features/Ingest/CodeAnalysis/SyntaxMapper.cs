@@ -59,12 +59,13 @@ internal static class SyntaxMapper
             symbol.ContainingNamespace?.ToDisplayString() ?? "",
             filePath,
             symbol.DeclaredAccessibility.ToString().ToLower(),
-            node.Members.Select(m => m.Identifier.Text).ToList());
+            node.Members.Select(m => m.Identifier.Text).ToList(),
+            node.ToString());
     }
 
     public static MethodResult ToMethodResult(
         MethodDeclarationSyntax node, IMethodSymbol symbol, SemanticModel semanticModel,
-        string containingType, string filePath)
+        string containingType, string filePath, string? assemblyName = null)
     {
         var parameters = symbol.Parameters.Select(p => new ParameterInfo(
             p.Name,
@@ -92,11 +93,12 @@ internal static class SyntaxMapper
             node.ToString());
 
         var calls = new List<CallInfo>();
-        new InvocationWalker(semanticModel, callerFullName, calls).Visit(node);
-
         // Only track references to non-primitive types (SpecialType.None).
         // Built-in types like int, string, void don't add value as graph edges.
         var references = new List<ReferenceInfo>();
+
+        new InvocationWalker(semanticModel, callerFullName, calls, references, assemblyName).Visit(node);
+
         if (symbol.ReturnType?.SpecialType == SpecialType.None)
             references.Add(new ReferenceInfo(callerFullName, symbol.ReturnType.ToDisplayString(), "returnType"));
 
@@ -109,21 +111,64 @@ internal static class SyntaxMapper
         return new MethodResult(method, calls, references);
     }
 
-    internal class InvocationWalker(SemanticModel semanticModel, string callerFullName, List<CallInfo> calls) : CSharpSyntaxWalker
+    internal class InvocationWalker(SemanticModel semanticModel, string callerFullName, List<CallInfo> calls, List<ReferenceInfo> references, string? assemblyName = null) : CSharpSyntaxWalker
     {
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
         {
             if (semanticModel.GetSymbolInfo(node).Symbol is IMethodSymbol invokedMethod)
             {
-                // ReducedFrom gives the original definition for extension methods called as instance methods.
-                // Fall back to OriginalDefinition for regular methods and unbound generics.
-                var resolved = invokedMethod.ReducedFrom?.OriginalDefinition
-                            ?? invokedMethod.OriginalDefinition;
-
+                var resolved = invokedMethod.ReducedFrom?.OriginalDefinition ?? invokedMethod.OriginalDefinition;
                 calls.Add(new CallInfo(callerFullName, resolved.ToDisplayString()));
+
+                // Identify DI registrations and other "wiring" hubs
+                var hubs = new[] {
+                    "Microsoft.Extensions.DependencyInjection.IServiceCollection",
+                    "Microsoft.AspNetCore.Builder.IApplicationBuilder",
+                    "Microsoft.AspNetCore.Routing.IEndpointRouteBuilder",
+                    "Microsoft.Extensions.DependencyInjection.IHttpClientBuilder",
+                    "Microsoft.Extensions.Options.IOptionsBuilder"
+                };
+
+                var receiverType = resolved.ReceiverType?.ToDisplayString();
+                var firstParamType = resolved.Parameters.FirstOrDefault()?.Type.ToDisplayString();
+
+                var isRegistration = hubs.Any(h => (receiverType?.StartsWith(h) ?? false) || (firstParamType?.StartsWith(h) ?? false));
+
+                var context = isRegistration ? "registration" : "genericArgument";
+
+                // Capture generic type arguments (e.g. AddScoped<IService, Service>)
+                foreach (var typeArg in invokedMethod.TypeArguments)
+                {
+                    if (typeArg.SpecialType == SpecialType.None)
+                    {
+                        references.Add(new ReferenceInfo(callerFullName, typeArg.ToDisplayString(), context, resolved.Name));
+                    }
+                }
             }
 
             base.VisitInvocationExpression(node);
+        }
+
+        public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
+        {
+            var symbol = semanticModel.GetSymbolInfo(node).Symbol;
+            // Only track static members (constants, static fields/properties) from our own codebase
+            if (symbol is { IsStatic: true } and (IFieldSymbol or IPropertySymbol))
+            {
+                var targetType = symbol.ContainingType;
+                if (targetType != null && targetType.SpecialType == SpecialType.None)
+                {
+                    var ns = targetType.ContainingNamespace?.ToDisplayString();
+                    var rootNs = assemblyName?.Split('.')[0];
+
+                    // Whitelist: Only capture if it matches our root namespace (e.g. "Chabis")
+                    if (!string.IsNullOrEmpty(ns) && rootNs != null && ns.StartsWith(rootNs))
+                    {
+                        references.Add(new ReferenceInfo(callerFullName, targetType.ToDisplayString(), "staticMember", symbol.Name));
+                    }
+                }
+            }
+            base.VisitMemberAccessExpression(node);
         }
     }
 }

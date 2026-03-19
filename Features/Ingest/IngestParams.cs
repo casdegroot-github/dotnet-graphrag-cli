@@ -15,9 +15,6 @@ public record IngestParams
     [Option(Description = "Skip projects containing 'Sample', 'Example', or 'Playground'")]
     public bool SkipSamples { get; init; }
 
-    [Option(Description = "Path to .slnf for NuGet project filtering")]
-    public string? NugetSlnf { get; init; }
-
     [UseOption<DatabaseOption>]
     public string? Database { get; init; }
 }

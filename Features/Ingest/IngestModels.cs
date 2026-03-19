@@ -29,11 +29,11 @@ public record ParameterInfo(string Name, string Type);
 
 public record CallInfo(string CallerFullName, string CalleeFullName);
 
-public record ReferenceInfo(string SourceFullName, string TargetTypeFullName, string Context);
+public record ReferenceInfo(string SourceFullName, string TargetTypeFullName, string Context, string? MemberName = null);
 
 public record EnumInfo(
     string FullName, string Name, string Namespace, string FilePath,
-    string Visibility, List<string> Members);
+    string Visibility, List<string> Members, string SourceText);
 
 public record EntryPointResult(long LinkedImplementations, long EntryPoints);
 

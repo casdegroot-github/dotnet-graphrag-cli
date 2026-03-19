@@ -18,7 +18,7 @@ public class KernelFactory(string ollamaUrl = "http://localhost:11434")
         return new Features.Summarize.Summarizers.Summarizer(chatClient, model);
     }
 
-    private IChatClient CreateChatClient(string provider) => provider switch
+    public IChatClient CreateChatClient(string provider) => provider switch
     {
         "ollama" => new OllamaApiClient(new HttpClient { BaseAddress = new Uri(ollamaUrl), Timeout = TimeSpan.FromMinutes(5) }),
         "claude" => new AnthropicClient().Beta.AsIChatClient("claude-haiku-4-5-20251001"),

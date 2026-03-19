@@ -1,3 +1,4 @@
+using GraphRagCli.Shared;
 using Neo4j.Driver;
 using Neo4j.Driver.Mapping;
 
@@ -7,24 +8,26 @@ public class Neo4jListRepository(IDriver driver)
 {
     public async Task<DatabaseInfo> GetDatabaseInfoAsync()
     {
-        var counts = await driver
+        var allCounts = await driver
             .ExecutableQuery(@"
                 MATCH (n)
-                WITH [l IN labels(n) WHERE l IN ['Project','Namespace','Class','Interface','Method','Enum']][0] AS label
-                WHERE label IS NOT NULL
+                UNWIND labels(n) AS label
                 RETURN label, count(*) AS count
                 ORDER BY count DESC")
             .ExecuteAsync()
             .AsObjectsAsync((string label, long count) => (label, count));
 
+        var counts = allCounts.Where(c => NodeType.All.Contains(c.label)).ToList();
+
         var projects = await driver
-            .ExecutableQuery(@"
+            .ExecutableQuery($@"
                 MATCH (p:Project)
-                OPTIONAL MATCH (ns:Namespace)-[:BELONGS_TO_PROJECT]->(p)<--(member)
+                OPTIONAL MATCH (ns:Namespace)-[:{RelType.BelongsToProject}]->(p)
+                OPTIONAL MATCH (member)-[:{RelType.BelongsToNamespace}]->(ns)
                 WITH p, count(DISTINCT member) AS MemberCount
                 RETURN p.fullName AS Name,
-                       coalesce(p.searchText, p.summary) AS Summary,
-                       MemberCount
+                       coalesce(p.summary, p.searchText, '') AS Summary,
+                       coalesce(MemberCount, 0) AS MemberCount
                 ORDER BY p.fullName")
             .ExecuteAsync()
             .AsObjectsAsync<ProjectInfo>();
@@ -39,10 +42,7 @@ public class Neo4jListRepository(IDriver driver)
             .AsObjectsAsync<SolutionInfo>();
 
         var embedStats = await driver
-            .ExecutableQuery(@"
-                MATCH (n)
-                WHERE any(l IN labels(n) WHERE l IN ['Class','Interface','Method','Enum'])
-                RETURN count(n) AS total, count(n.embedding) AS embedded")
+            .ExecutableQuery($"MATCH (n:{NodeLabels.Embeddable}) RETURN count(n) AS total, count(n.embedding) AS embedded")
             .ExecuteAsync()
             .AsObjectsAsync((long total, long embedded) => (total, embedded));
 

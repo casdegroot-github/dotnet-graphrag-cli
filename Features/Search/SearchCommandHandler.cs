@@ -61,12 +61,18 @@ public class SearchCommandHandler(
         {
             var summary = r.Summary ?? "";
             if (summary.Length > 60) summary = summary[..57] + "...";
-            Console.WriteLine($"{r.Score:F4}  {r.Type,-12} {r.FullName,-50} {summary}");
+            var meta = $"T{r.Tier ?? 0} | P{r.PageRank:F2}";
+            Console.WriteLine($"{r.Score:F4}  {r.Type,-12} {r.FullName,-50} [{meta}] {summary}");
 
-            if (r.Type == NodeLabels.Method && r.ReturnType != null)
+            if (r.Type == NodeType.Method && r.ReturnType != null)
             {
                 var sig = $"{r.ReturnType} {r.Name}({r.Parameters ?? ""})";
                 Console.WriteLine($"         sig: {sig}");
+            }
+
+            if (!string.IsNullOrEmpty(r.SearchText))
+            {
+                Console.WriteLine($"         search: {r.SearchText}");
             }
 
             if (r.Neighbors is { Count: > 0 })

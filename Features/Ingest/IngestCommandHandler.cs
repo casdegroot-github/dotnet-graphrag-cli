@@ -74,8 +74,8 @@ public class IngestCommandHandler(
         Console.WriteLine($"Linked {r.EntryPoints.LinkedImplementations} interface method implementations.");
         Console.WriteLine($"Labeled {r.EntryPoints.EntryPoints} entry points.");
 
-        if (r.NugetProjectCount != null)
-            Console.WriteLine($"\nPublic API surface ({r.NugetProjectCount} NuGet projects from .slnf):");
+        if (r.PackageCount > 0)
+            Console.WriteLine($"\nPublic API surface ({r.PackageCount} packages):");
         else
             Console.WriteLine("\nPublic API surface (all public members):");
 

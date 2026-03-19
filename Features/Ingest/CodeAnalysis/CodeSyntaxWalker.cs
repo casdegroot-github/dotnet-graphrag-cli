@@ -80,10 +80,12 @@ internal class CodeSyntaxWalker(
 
         // Walk all global statements for invocations and type references
         var invocationCalls = new List<CallInfo>();
-        var invocationWalker = new SyntaxMapper.InvocationWalker(semanticModel, methodFullName, invocationCalls);
+        var invocationReferences = new List<ReferenceInfo>();
+        var invocationWalker = new SyntaxMapper.InvocationWalker(semanticModel, methodFullName, invocationCalls, invocationReferences);
         foreach (var stmt in globalStatements)
             invocationWalker.Visit(stmt);
         calls.AddRange(invocationCalls);
+        references.AddRange(invocationReferences);
 
         // Extract type references from variable declarations and object creations
         foreach (var stmt in globalStatements)
@@ -166,7 +168,7 @@ internal class CodeSyntaxWalker(
         var symbol = semanticModel.GetDeclaredSymbol(node);
         if (symbol == null) return;
 
-        var result = SyntaxMapper.ToMethodResult(node, symbol, semanticModel, _containingType, filePath);
+        var result = SyntaxMapper.ToMethodResult(node, symbol, semanticModel, _containingType, filePath, assemblyName);
         methods.Add(result.Method);
         calls.AddRange(result.Calls);
         references.AddRange(result.References);
